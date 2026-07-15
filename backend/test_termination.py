@@ -37,15 +37,12 @@ async def done_action(state):
     )
 
 
-async def fake_plan(state):
-    return "[ ] find the company number"
-
-
 async def main():
     from agent.graph import build_graph
 
     # Case 1: permanently stuck agent must give up with status="failed".
-    nodes.stream_plan = fake_plan
+    # (planning is merged into the first decide; stuck_action returns no
+    # checklist, so decide_action seeds the single-item fallback)
     nodes.stream_action = stuck_action
     nodes.stream_recovery_action = stuck_action
     try:

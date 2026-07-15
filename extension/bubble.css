@@ -30,13 +30,98 @@
     box-shadow: 0 8px 24px rgba(0,0,0,0.12);
 }
 
+#a11y-agent-input-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
 #a11y-agent-input {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     padding: 8px;
     border: 1px solid #e5e7eb;
     border-radius: 6px;
     font-size: 14px;
+    /* host pages (e.g. Instagram) set a global light text color that cascades
+       into the injected input, making it invisible on the white panel. Pin
+       both colors so the input renders the same everywhere. */
+    color: #111827;
+    background: #ffffff;
+}
+
+#a11y-agent-mic {
+    flex-shrink: 0;
+    width: 38px;
+    padding: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #ffffff;
+    font-size: 16px;
+    cursor: pointer;
+    line-height: 1;
+}
+
+#a11y-agent-mic:hover {
+    background: #f3f4f6;
+}
+
+#a11y-agent-mic.recording {
+    background: #ef4444;
+    border-color: #ef4444;
+    animation: a11y-agent-pulse 1.2s ease-out infinite;
+}
+
+@keyframes a11y-agent-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+    70%  { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+#a11y-agent-stop {
+    display: block;
+    width: 100%;
+    padding: 10px;
     margin-bottom: 8px;
+    border: none;
+    border-radius: 6px;
+    background: #ef4444;
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+#a11y-agent-stop:hover {
+    background: #dc2626;
+}
+
+#a11y-agent-wake {
+    display: block;
+    width: 100%;
+    padding: 6px;
+    margin-bottom: 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #6b7280;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+#a11y-agent-wake:hover {
+    background: #f3f4f6;
+}
+
+#a11y-agent-wake.on {
+    background: #eff6ff;
+    border-color: #3B82F6;
+    color: #1d4ed8;
+    font-weight: 600;
+}
+
+#a11y-agent-input::placeholder {
+    color: #9ca3af;
 }
 
 #a11y-agent-status {

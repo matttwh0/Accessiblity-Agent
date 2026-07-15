@@ -27,3 +27,11 @@ out/
 *.swp
 .idea/
 .vscode/
+
+# --- Extension signing key & build artifacts ---
+*.pem
+*.crx
+extension.zip
+
+# --- Generated knowledge graph (graphify) ---
+graphify-out/

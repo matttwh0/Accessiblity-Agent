@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import agent.nodes as nodes
-from agent.nodes import plan_task, decide_action, recover, has_unchecked
+from agent.nodes import decide_action, recover, has_unchecked
 from agent.schemas import AgentState, AgentAction, ActionType, PageContext, DOMNode
 
 
@@ -46,20 +46,27 @@ def test_has_unchecked_tolerates_dash_prefix():
     assert has_unchecked("- [x] open search bar\n- [ ] type query")
 
 
-# --- plan_task: initial decomposition ---
+# --- first turn: planning is merged into the first decide call ---
 
-def test_plan_task_sets_checklist():
-    state = make_state()
-    plan = "[ ] click search icon\n[ ] type query\n[ ] press enter"
-    with patch.object(nodes, "stream_plan", AsyncMock(return_value=plan)):
-        state = asyncio.run(plan_task(state))
+def test_first_turn_applies_merged_checklist():
+    state = make_state()  # empty checklist = first turn
+    plan = "[x] click search icon\n[ ] type query\n[ ] press enter"
+    action = AgentAction(
+        type=ActionType.CLICK, selector="#search",
+        description="Click the search icon", updated_checklist=plan,
+    )
+    with patch.object(nodes, "stream_action", AsyncMock(return_value=action)):
+        state = asyncio.run(decide_action(state))
     assert state.checklist == plan
 
 
-def test_plan_task_falls_back_to_raw_task_on_failure():
+def test_first_turn_seeds_fallback_when_no_checklist_returned():
+    # the merged call came back without a plan -> single-item fallback so the
+    # done-gate still has something to gate on
     state = make_state()
-    with patch.object(nodes, "stream_plan", AsyncMock(side_effect=RuntimeError("api down"))):
-        state = asyncio.run(plan_task(state))
+    action = AgentAction(type=ActionType.CLICK, selector="#search", description="click")
+    with patch.object(nodes, "stream_action", AsyncMock(return_value=action)):
+        state = asyncio.run(decide_action(state))
     assert state.checklist == "[ ] search up cats on this website"
 
 
@@ -113,14 +120,14 @@ def test_done_accepted_when_all_items_checked():
 
 
 def test_done_accepted_after_retry_budget_exhausted():
-    # if Claude insists on done 3x in a row, accept it (avoid infinite loop)
+    # if Claude insists on done twice in a row, accept it (avoid infinite loop)
     state = make_state(checklist="[x] click search icon\n[ ] type query")
     done = AgentAction(type=ActionType.DONE, description="Task complete")
     mock = AsyncMock(return_value=done)
     with patch.object(nodes, "stream_action", mock):
         state = asyncio.run(decide_action(state))
     assert state.status == "done"
-    assert mock.call_count == 3  # initial + 2 retries
+    assert mock.call_count == 2  # initial + 1 retry
 
 
 def test_done_accepted_when_retry_checks_off_remaining():

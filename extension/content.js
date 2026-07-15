@@ -4,7 +4,12 @@ bubble.id = 'a11y-agent-bubble'
 bubble.innerHTML = `
   <div id="a11y-agent-icon">🤖</div>
   <div id="a11y-agent-panel" style="display:none">
-    <input id="a11y-agent-input" placeholder="What do you need help with?" />
+    <div id="a11y-agent-input-row">
+      <input id="a11y-agent-input" placeholder="What do you need help with?" />
+      <button id="a11y-agent-mic" title="Speak your request">🎤</button>
+    </div>
+    <button id="a11y-agent-stop" style="display:none">⏹ Stop helping</button>
+    <button id="a11y-agent-wake">👂 Say "Hey Helper": Off</button>
     <div id="a11y-agent-checklist" style="display:none"></div>
     <div id="a11y-agent-status"></div>
   </div>
@@ -14,6 +19,9 @@ document.body.appendChild(bubble)
 const icon = document.getElementById('a11y-agent-icon')
 const panel = document.getElementById('a11y-agent-panel')
 const input = document.getElementById('a11y-agent-input')
+const mic = document.getElementById('a11y-agent-mic')
+const stopBtn = document.getElementById('a11y-agent-stop')
+const wakeBtn = document.getElementById('a11y-agent-wake')
 const checklist = document.getElementById('a11y-agent-checklist')
 const status = document.getElementById('a11y-agent-status')
 
@@ -50,13 +58,10 @@ icon.addEventListener('click', () => {
     if (panel.style.display === 'block') input.focus()
 })
 
-input.addEventListener('keydown', async (e) => {
-    if (e.key !== 'Enter') return
-    const task = input.value.trim()
-    if (!task) return
-    
+function startTask(task) {
     status.textContent = 'Thinking...'
     renderChecklist('')  // clear any previous task's plan
+    setTaskRunning(true)
     sendToBackground({
         type: 'start_task',
         task,
@@ -64,45 +69,173 @@ input.addEventListener('keydown', async (e) => {
         title: document.title,
         dom_tree: extractAccessibilityTree()
     })
-})
-
-function generateSelector(el) {
-    if (el.id) return `[id="${el.id.replace(/"/g, '\\"')}"]`
-    if (el.getAttribute('data-testid')) return `[data-testid="${el.getAttribute('data-testid')}"]`
-    
-    // use text content for unique anchors/buttons
-    const text = (el.innerText || '').trim().slice(0, 30)
-    if (text && (el.tagName === 'A' || el.tagName === 'BUTTON')) {
-        return `${el.tagName.toLowerCase()}:has-text("${text}")`
-    }
-    
-    // fallback: tag + nth-of-type
-    const parent = el.parentElement
-    if (parent) {
-        const siblings = [...parent.children].filter(c => c.tagName === el.tagName)
-        const i = siblings.indexOf(el)
-        return `${el.tagName.toLowerCase()}:nth-of-type(${i + 1})`
-    }
-    return el.tagName.toLowerCase()
 }
 
+// the Stop button is only visible while a task is running; the background
+// tells us when the task ended (msg.ended on its final agent_update)
+function setTaskRunning(running) {
+    stopBtn.style.display = running ? 'block' : 'none'
+}
+
+function stopAgent(voiceThanks) {
+    sendToBackground({ type: 'stop_task' })
+    setTaskRunning(false)
+    status.textContent = voiceThanks ? "You're welcome! I've stopped." : 'Stopped.'
+}
+
+stopBtn.addEventListener('click', () => stopAgent(false))
+
+input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return
+    const task = input.value.trim()
+    if (task) startTask(task)
+})
+
+// --- voice input: remote-controls the extension's offscreen microphone ---
+// ALL capture (wake word + dictation) lives in the extension's offscreen
+// document, so the mic permission is granted ONCE to the extension instead
+// of per-site, and exactly one listener exists browser-wide. This script
+// only renders state and forwards button presses; transcripts arrive as
+// voice_* messages from the background worker.
+let voiceActive = false  // a dictation for THIS tab is in progress
+
+function setMicRecording(recording) {
+    voiceActive = recording
+    mic.classList.toggle('recording', recording)
+    mic.title = recording ? 'Stop and send' : 'Speak your request'
+}
+
+mic.addEventListener('click', () => {
+    if (!extensionAlive()) {
+        status.textContent = '⚠ Extension was updated — refresh this page and try again'
+        return
+    }
+    if (voiceActive) {
+        // manual stop: submit whatever was heard so far
+        setMicRecording(false)
+        sendToBackground({ type: 'voice_stop' })
+        const task = input.value.trim()
+        if (task) startTask(task)
+        else status.textContent = "I didn't catch that — try again"
+    } else {
+        showPanel()
+        input.value = ''
+        status.textContent = 'Starting microphone…'
+        sendToBackground({ type: 'voice_start' })
+    }
+})
+
+
+// --- wake word toggle -----------------------------------------------------
+// The actual listener lives in the extension's offscreen document (one
+// recognizer browser-wide; see background.js). This button just flips the
+// shared setting in chrome.storage — the background watches it and arms or
+// pauses the offscreen listener, including the privacy rule "never listen
+// while no Chrome window has focus".
+let wakeOn = false
+
+function renderWakeBtn() {
+    wakeBtn.textContent = wakeOn ? '\u{1F442} Say "Hey Helper": On' : '\u{1F442} Say "Hey Helper": Off'
+    wakeBtn.classList.toggle('on', wakeOn)
+}
+
+wakeBtn.addEventListener('click', () => {
+    if (!extensionAlive()) {
+        status.textContent = '\u26A0 Extension was updated \u2014 refresh this page and try again'
+        return
+    }
+    wakeOn = !wakeOn
+    renderWakeBtn()
+    try { chrome.storage.local.set({ wakeWordEnabled: wakeOn }) } catch {}
+})
+
+// restore the user's choice (persisted per browser, not per site)
+try {
+    chrome.storage.local.get('wakeWordEnabled').then(({ wakeWordEnabled }) => {
+        wakeOn = !!wakeWordEnabled
+        renderWakeBtn()
+    }).catch(() => {})
+} catch {}
+
+// Invisible extension iframe hosting the wake-word listener (wake.js).
+// Extension origin -> the one-time mic grant covers it on every site, and
+// SpeechRecognition works here (Chrome refuses it in offscreen documents).
+// Inert until the background elects this tab's frame to listen. WAR-listed
+// extension resources bypass page CSP, so injection works everywhere.
+if (extensionAlive()) {
+    const wakeFrame = document.createElement('iframe')
+    wakeFrame.src = chrome.runtime.getURL('wake.html')
+    wakeFrame.allow = 'microphone'   // required for a cross-origin frame to use the mic
+    wakeFrame.style.display = 'none'
+    document.body.appendChild(wakeFrame)
+}
+
+// Extracts the interactive elements as an accessibility tree, addressing each
+// by an opaque, per-snapshot stable id stamped onto the DOM node itself
+// (data-a11y-id="N"). The id IS the selector: resolving it later is an exact
+// document.querySelector lookup that can't match the wrong element or miss the
+// way a text/position-based selector could (whitespace, duplicate text, a list
+// that reordered). The id is only valid within THIS snapshot — stale stamps
+// from a previous extraction are cleared first so no id is ambiguous, and the
+// agent always acts on the freshest snapshot.
 function extractAccessibilityTree() {
     const selectors = 'button, a, input, select, textarea, [role], h1, h2, h3, label'
+    // drop ids from a previous extraction so each id points at exactly one
+    // element in this snapshot (a shrinking page could otherwise leave a stale
+    // duplicate that querySelector would resolve to instead)
+    document.querySelectorAll('[data-a11y-id]').forEach(el => el.removeAttribute('data-a11y-id'))
     return [...document.querySelectorAll(selectors)]
         .filter(el => {
             const r = el.getBoundingClientRect()
             return r.width > 0 && r.height > 0
         })
-        .map(el => ({
-            tag: el.tagName.toLowerCase(),
-            text: (el.innerText || '').slice(0, 100),
-            label: el.ariaLabel || el.placeholder || el.title || null,
-            role: el.getAttribute('role'),
-            selector: generateSelector(el),
-            visible: true,
-            // current input value so the backend can see typing took effect
-            value: typeof el.value === 'string' ? el.value.slice(0, 100) : null
-        }))
+        .map((el, i) => {
+            el.setAttribute('data-a11y-id', String(i))
+            const node = {
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || '').slice(0, 100),
+                label: el.ariaLabel || el.placeholder || el.title || null,
+                role: el.getAttribute('role'),
+                selector: `[data-a11y-id="${i}"]`,
+                visible: true,
+                // current input value so the backend can see typing took effect
+                value: typeof el.value === 'string' ? el.value.slice(0, 100) : null
+            }
+            // a <select>'s dropdown is browser UI the agent can never see or
+            // click — surface its choices so the agent can pick one by "type"
+            if (el.tagName === 'SELECT') {
+                node.options = [...el.options].slice(0, 20).map(o => o.text.trim().slice(0, 80))
+            }
+            return node
+        })
+}
+
+// Like extractAccessibilityTree(), but waits for the DOM to stop mutating
+// first. Many sites (GitHub, other SPAs) inject the script before deferred /
+// turbo-frame content hydrates, so an immediate snapshot misses controls that
+// load a beat later — e.g. the "New issue" button on a GitHub issues page.
+// Snapshotting too early strands the agent: it can't click what it never sees,
+// so it loops scrolling for a control that isn't in its perception. We wait for
+// a quiet gap (capped) so the first snapshot reflects the settled page.
+function extractWhenSettled({ quietMs = 200, maxMs = 2500 } = {}) {
+    return new Promise((resolve) => {
+        let done = false, quietTimer = null, observer = null, capTimer = null
+        function finish() {
+            if (done) return
+            done = true
+            clearTimeout(quietTimer); clearTimeout(capTimer)
+            if (observer) observer.disconnect()
+            resolve(extractAccessibilityTree())
+        }
+        const bump = () => {
+            clearTimeout(quietTimer)
+            quietTimer = setTimeout(finish, quietMs)
+        }
+        observer = new MutationObserver(bump)
+        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true })
+        bump()  // start the quiet clock so a static page still resolves promptly
+        capTimer = setTimeout(finish, maxMs)  // never hang on a perpetually-animating page
+    })
 }
 
 function findElement(selector) {
@@ -148,19 +281,53 @@ function sendToBackground(payload) {
 // page navigations). This script just executes actions and reports back.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'execute_action') {
+        setTaskRunning(true)  // a freshly-loaded page learns a task is mid-flight
         handleExecuteAction(msg)
     } else if (msg.type === 'agent_update') {
         showPanel()
         if (msg.description) status.textContent = msg.description
         if (msg.checklist !== undefined) renderChecklist(msg.checklist)
+        setTaskRunning(!msg.ended)
+    } else if (msg.type === 'voice_state') {
+        // the offscreen mic started/stopped a dictation bound to this tab
+        if (msg.recording) {
+            showPanel()
+            input.value = ''
+            setMicRecording(true)
+            status.textContent = 'Listening… speak now'
+        } else {
+            setMicRecording(false)
+        }
+    } else if (msg.type === 'voice_transcript') {
+        if (voiceActive) {
+            if (msg.text) input.value = msg.text   // live partial transcript
+            if (msg.is_final && msg.text && msg.text.trim()) {
+                setMicRecording(false)
+                startTask(msg.text.trim())
+            }
+        }
+    } else if (msg.type === 'voice_error') {
+        showPanel()
+        setMicRecording(false)
+        status.textContent = `⚠ ${msg.error}`
     } else if (msg.type === 'collect_context') {
-        // background needs the current page state (e.g. after a failed
-        // browser action) — answer synchronously
-        sendResponse({
-            url: window.location.href,
-            title: document.title,
-            dom_tree: extractAccessibilityTree()
+        // background needs the current page state (after a failed browser
+        // action, or a re-perceive while stuck). Wait for the DOM to settle
+        // first so deferred-loaded content (e.g. a repo's file list) is in the
+        // snapshot — this is the whole point of re-extracting on stuck.
+        extractWhenSettled().then((dom_tree) => {
+            sendResponse({
+                url: window.location.href,
+                title: document.title,
+                dom_tree
+            })
         })
+        return true  // keep the message channel open for the async sendResponse
+    } else if (msg.type === 'evaluate_expectation') {
+        // the previous action navigated here; check its predicted outcome
+        // against THIS freshly loaded page (the prediction couldn't be checked
+        // on the old page, which had already unloaded)
+        sendResponse(expectationMet(msg.expect))
     }
 })
 
@@ -170,23 +337,87 @@ let pageIsUnloading = false
 window.addEventListener('pagehide', () => { pageIsUnloading = true })
 window.addEventListener('beforeunload', () => { pageIsUnloading = true })
 
-// Resolves true if the page starts navigating away within `timeout` ms — in
-// which case the caller must stay silent and let the new page's content_ready
-// report the outcome. Resolves false if the page stayed put, meaning the
-// action ran in place and its result should be reported normally.
-function settleOrNavigate(timeout) {
-    if (pageIsUnloading) return Promise.resolve(true)
+// True if every field the agent predicted (expect) currently holds on the page.
+// Missing/empty expect counts as met (no prediction to satisfy). This is the
+// "positive signal" the agent waits for instead of mere DOM quiescence.
+function expectationMet(expect) {
+    if (!expect) return true
+    if (expect.url_contains && !window.location.href.includes(expect.url_contains)) return false
+    if (expect.selector && !findElement(expect.selector)) return false
+    if (expect.text_contains && !(document.body?.innerText || '').includes(expect.text_contains)) return false
+    return true
+}
+
+// Waits for the page to be safe to read after an action, resolving as soon as
+// the *right* signal fires instead of paying a flat timeout. Returns
+// { navigated, expectationMet }:
+//   - navigated:true       -> a hard navigation began; stay silent, the new
+//                             page's content_ready reports the outcome.
+//   - expectationMet:bool  -> if the action carried a prediction (expect),
+//                             whether it came true (true) or timed out (false).
+//   - expectationMet:null  -> no prediction; we reported on DOM quiescence.
+// Three strategies race, whichever is relevant:
+//   1. pagehide/beforeunload -> hard nav (highest priority).
+//   2. expect given -> poll until the prediction holds; if the page visibly
+//      reacted (mutations) then settled and the prediction STILL isn't true
+//      after minMs, it's a misprediction — report early instead of paying maxMs.
+//   3. no expect -> a MutationObserver reports once edits stop for quietMs.
+function awaitSettle(expect, { quietMs = 200, minMs = 1200, maxMs = 2500 } = {}) {
+    if (pageIsUnloading) return Promise.resolve({ navigated: true, expectationMet: null })
     return new Promise((resolve) => {
-        const onUnload = () => finish(true)
-        function finish(navigated) {
-            clearTimeout(timer)
+        let resolved = false
+        let observer = null, quietTimer = null, pollTimer = null, capTimer = null
+
+        const onUnload = () => done({ navigated: true, expectationMet: null })
+        function done(result) {
+            if (resolved) return
+            resolved = true
+            clearTimeout(quietTimer); clearTimeout(pollTimer); clearTimeout(capTimer)
+            if (observer) observer.disconnect()
             window.removeEventListener('pagehide', onUnload)
             window.removeEventListener('beforeunload', onUnload)
-            resolve(navigated)
+            resolve(result)
         }
-        const timer = setTimeout(() => finish(false), timeout)
+
+        // a hard navigation always wins, in either mode
         window.addEventListener('pagehide', onUnload)
         window.addEventListener('beforeunload', onUnload)
+
+        if (expect) {
+            // wait for the PREDICTED outcome — don't report on a quiet gap that
+            // an async result hasn't filled yet. Two exits for a wrong
+            // prediction: early (the page mutated, went quiet for quietMs, and
+            // minMs elapsed — it did SOMETHING, just not what was predicted,
+            // e.g. a dropdown opened instead of navigating) or the maxMs cap
+            // (nothing observable happened at all).
+            const start = performance.now()
+            let lastMutation = null
+            observer = new MutationObserver(() => { lastMutation = performance.now() })
+            observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true })
+            const poll = () => {
+                if (expectationMet(expect)) return done({ navigated: false, expectationMet: true })
+                const now = performance.now()
+                if (lastMutation !== null && now - lastMutation > quietMs && now - start > minMs) {
+                    return done({ navigated: false, expectationMet: false })
+                }
+                pollTimer = setTimeout(poll, 100)
+            }
+            poll()
+            capTimer = setTimeout(() => done({ navigated: false, expectationMet: false }), maxMs)
+        } else {
+            // no prediction: report once the DOM stops mutating for quietMs.
+            // observe documentElement (the whole doc) since a soft nav can swap body.
+            const bump = () => {
+                clearTimeout(quietTimer)
+                quietTimer = setTimeout(() => done({ navigated: false, expectationMet: null }), quietMs)
+            }
+            observer = new MutationObserver(bump)
+            observer.observe(document.documentElement, {
+                childList: true, subtree: true, attributes: true, characterData: true,
+            })
+            bump() // start the quiet clock so a no-op action still reports promptly
+            capTimer = setTimeout(() => done({ navigated: false, expectationMet: null }), maxMs)
+        }
     })
 }
 
@@ -202,19 +433,22 @@ async function handleExecuteAction(msg) {
         status.textContent = `⚠ ${result.error}`
     }
 
-    // Give the action a beat to settle. If it triggered a navigation (e.g. a
-    // clicked hyperlink), this page is about to unload — reporting from a dying
-    // page would ship a stale snapshot that races the new page's content_ready
-    // and strands the agent. So stay silent and let content_ready report, the
-    // same reliable channel the navigate/new_tab browser actions already use.
-    const navigated = await settleOrNavigate(1500)
-    if (navigated) return
+    // Wait for the page to settle. If the action carried a prediction (expect),
+    // we wait for THAT to come true; otherwise we wait for the DOM to go quiet.
+    // If it triggered a hard navigation, this page is about to unload — reporting
+    // from a dying page would ship a stale snapshot that races the new page's
+    // content_ready and strands the agent. So stay silent and let content_ready
+    // report (where the carried-over expectation is checked on the new page).
+    const settle = await awaitSettle(msg.action.expect)
+    if (settle.navigated) return
 
     sendToBackground({
         type: 'action_executed',
         // null = executed; string = why it did NOT execute. The backend
         // feeds this to the agent so it can't believe phantom actions.
         action_result: result.success ? null : result.error,
+        // true/false = whether the predicted outcome came true; null = no prediction
+        expectation_met: settle.expectationMet,
         url: window.location.href,
         title: document.title,
         dom_tree: extractAccessibilityTree()
@@ -228,13 +462,23 @@ function showPanel() {
 }
 
 // announce this page to the background worker — if a task is mid-flight in
-// this tab, this is how it resumes after a navigation
-chrome.runtime.sendMessage({
-    type: 'content_ready',
-    url: window.location.href,
-    title: document.title,
-    dom_tree: extractAccessibilityTree()
-}).catch(() => {})
+// this tab, this is how it resumes after a navigation. Wait for the page to
+// settle first so deferred-hydrated controls are in the snapshot the agent
+// plans against (otherwise it perceives a half-loaded page).
+extractWhenSettled().then((dom_tree) => {
+    chrome.runtime.sendMessage({
+        type: 'content_ready',
+        url: window.location.href,
+        title: document.title,
+        dom_tree
+    }).catch(() => {})
+})
+
+// The element the agent last successfully typed into — the natural target
+// for a follow-up press_enter without a selector. document.activeElement is
+// too fragile for that job: React re-renders drop focus during the backend
+// round-trip, and the user may have clicked (even into our own bubble).
+let lastTypedEl = null
 
 // Executes an action and reports whether it actually ran.
 // Returns { success: true } or { success: false, error: '<why>' } — the error
@@ -251,19 +495,38 @@ async function executeAction(action) {
         if (!el) {
             return { success: false, error: `element not found for selector: ${action.selector}` }
         }
-        // highlight + bring into view
+        // highlight + bring into view. Instant scroll: el.click() works
+        // regardless of scroll position, so the scroll is purely so the user
+        // can see what's happening — no need to pay for a smooth animation.
         el.style.outline = '3px solid #3B82F6'
         el.style.outlineOffset = '2px'
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        await sleep(800)
+        el.scrollIntoView({ behavior: 'auto', block: 'center' })
+        await sleep(100)
     }
 
     switch (action.type) {
         case 'click':
+            // hover first: menus that open on :hover / mouseover never see a
+            // bare programmatic click, so the agent could never open them
+            el.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
+            el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+            el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }))
             el.click()
             break
         case 'type': {
             const value = action.value ?? ''
+            // a <select> can't be typed into or clicked open — picking one of
+            // its options (matched by text or value) IS the type action here
+            if (el.tagName === 'SELECT') {
+                const opt = [...el.options].find(o => o.text.trim() === value || o.value === value)
+                if (!opt) {
+                    return { success: false, error: `no option matching "${value}" in ${action.selector}` }
+                }
+                el.value = opt.value
+                el.dispatchEvent(new Event('input', { bubbles: true }))
+                el.dispatchEvent(new Event('change', { bubbles: true }))
+                break
+            }
             el.focus()
             el.value = value
             el.dispatchEvent(new Event('input', { bubbles: true }))
@@ -273,17 +536,27 @@ async function executeAction(action) {
             if (el.value !== value) {
                 return { success: false, error: `typed text did not stick in ${action.selector}` }
             }
+            lastTypedEl = el
             break
         }
         case 'press_enter': {
-            // press Enter like a real user — on the given element, or
-            // whatever currently has focus (e.g. the input just typed in)
+            // press Enter like a real user — on the given element, the input
+            // the agent last typed into, or whatever currently has focus
             let target = document.activeElement
             if (action.selector) {
                 target = findElement(action.selector)
                 if (!target) {
                     return { success: false, error: `element not found for selector: ${action.selector}` }
                 }
+            }
+            // never act on our own UI — if the user clicked the bubble, its
+            // input is the activeElement and Enter there would start a task
+            if (target && bubble.contains(target)) target = null
+            // focus is fragile (React re-renders drop it during the backend
+            // round-trip) — the input the agent just typed into is the target
+            // it almost certainly means
+            if ((!target || target === document.body) && lastTypedEl && lastTypedEl.isConnected) {
+                target = lastTypedEl
             }
             if (!target || target === document.body) {
                 return { success: false, error: 'press_enter has no target — provide the input\'s selector' }
@@ -316,3 +589,54 @@ async function executeAction(action) {
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms))
 }
+
+// Keep the background service worker alive during long backend throttle pauses.
+// An open port is the only reliable MV3 keepalive — setInterval can be
+// suspended by Chrome before it fires and doesn't prevent SW termination.
+//
+// Guards three lifecycle hazards that otherwise spam the console (and can strand
+// a task):
+//   1. Extension reloaded/updated -> this content script is orphaned and
+//      chrome.runtime is dead; connect() throws "Extension context invalidated"
+//      synchronously. Catch it and STOP — nothing to keep alive until the page
+//      is refreshed. (Blindly reconnecting is what threw the uncaught error.)
+//   2. Back/forward cache -> Chrome force-closes ports on frozen pages. We drop
+//      the port on pagehide and restore it on pageshow so Chrome never has to
+//      sever it, and read lastError so a severed port isn't logged "unchecked".
+//   3. Service worker cycled normally -> reconnect after a short delay.
+// Note: a merely backgrounded tab does NOT fire pagehide, so its keepalive is
+// left intact — a task started then switched away from keeps running.
+let keepAlivePort = null
+
+// chrome.runtime.id is undefined once the extension context is invalidated —
+// the cheapest reliable "are we still a live extension?" check.
+function extensionAlive() {
+    try { return !!chrome.runtime?.id } catch { return false }
+}
+
+function connectKeepAlive() {
+    if (keepAlivePort || !extensionAlive()) return
+    try {
+        keepAlivePort = chrome.runtime.connect({ name: 'keepalive' })
+    } catch {
+        keepAlivePort = null   // context invalidated — give up (page needs a refresh)
+        return
+    }
+    keepAlivePort.onDisconnect.addListener(() => {
+        try { void chrome.runtime.lastError } catch {}  // consume so it isn't logged "unchecked"
+        keepAlivePort = null
+        if (extensionAlive()) setTimeout(connectKeepAlive, 1000)
+    })
+}
+
+// bfcache: release the port before the page freezes, restore it when it returns,
+// so Chrome never force-closes a port on a cached page.
+window.addEventListener('pagehide', () => {
+    if (keepAlivePort) {
+        try { keepAlivePort.disconnect() } catch {}
+        keepAlivePort = null
+    }
+})
+window.addEventListener('pageshow', connectKeepAlive)
+
+connectKeepAlive()

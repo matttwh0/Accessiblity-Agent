@@ -31,6 +31,21 @@ class DOMNode(BaseModel):
     # current value of inputs/selects/textareas — lets verify() see that
     # typing actually changed the page
     value: Optional[str] = None
+    # a <select>'s option texts — its dropdown is browser UI the agent can
+    # never see or click, so the choices must travel with the node
+    options: Optional[list[str]] = None
+
+class Expectation(BaseModel):
+    """The observable outcome the agent PREDICTS its action will produce.
+
+    Optional, and any combination of fields may be set — all present fields
+    must hold for the expectation to count as met. The extension waits for
+    these to become true (instead of merely waiting for the DOM to go quiet)
+    so an async result isn't reported before it lands.
+    """
+    url_contains: Optional[str] = None    # substring expected in the URL afterward
+    selector: Optional[str] = None        # an element expected to appear (same selector syntax as actions)
+    text_contains: Optional[str] = None   # text expected to appear on the page
 
 class AgentAction(BaseModel):
     type: ActionType
@@ -38,6 +53,9 @@ class AgentAction(BaseModel):
     value: Optional[str] = None
     description: str       # narration shown to user
     reasoning: Optional[str] = None
+    # what the agent predicts this action will make true on the page — drives
+    # expectation-based waiting + a precise post-action correctness check
+    expect: Optional[Expectation] = None
     # full checklist string, returned only when a step was just completed
     # (decide) or the plan needs restructuring (recover)
     updated_checklist: Optional[str] = None
@@ -64,6 +82,11 @@ class AgentState(BaseModel):
     # execution feedback from the extension: None = last action executed,
     # str = error message explaining why it did NOT execute
     last_action_result: Optional[str] = None
+
+    # whether the last action's predicted outcome (AgentAction.expect) came
+    # true: True = met, False = the prediction did NOT materialize (a precise
+    # failure signal), None = the action made no prediction
+    last_expectation_met: Optional[bool] = None
 
     # recovery tracking
     stuck_count: int = 0
