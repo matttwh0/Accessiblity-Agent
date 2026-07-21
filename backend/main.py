@@ -34,7 +34,7 @@ import json
 
 from agent.graph import build_graph
 from agent.nodes import perceive, decide_action, verify, recover, hash_dom
-from agent.schemas import AgentState, PageContext, DOMNode
+from agent.schemas import AgentState, PageContext, DOMNode, UserProfile
 from clients.assemblyai import proxy_transcription
 from clients.claude import reset_usage, usage_summary
 
@@ -85,8 +85,11 @@ async def agent_endpoint(ws: WebSocket):
                 logger.info("=== NEW TASK: %r ===", msg["task"])
                 reset_usage()
                 task_started_at = msg_received_at
+                profile_data = msg.get("profile")
                 state = AgentState(
                     task=msg["task"],
+                    # profile is never logged — do not add it to any log line
+                    profile=UserProfile(**profile_data) if profile_data else None,
                     context=PageContext(
                         url=msg["url"],
                         title=msg["title"],
