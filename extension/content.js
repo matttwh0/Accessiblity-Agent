@@ -13,6 +13,7 @@ bubble.innerHTML = `
     </div>
     <button id="a11y-agent-stop" style="display:none">⏹ Stop helping</button>
     <button id="a11y-agent-wake">👂 Say "Hey Helper": Off</button>
+    <button id="a11y-agent-myinfo">⚙ My info</button>
     <div id="a11y-agent-checklist" style="display:none"></div>
     <div id="a11y-agent-status"></div>
   </div>
@@ -27,6 +28,11 @@ const stopBtn = document.getElementById('a11y-agent-stop')
 const wakeBtn = document.getElementById('a11y-agent-wake')
 const checklist = document.getElementById('a11y-agent-checklist')
 const status = document.getElementById('a11y-agent-status')
+const myInfoBtn = document.getElementById('a11y-agent-myinfo')
+
+myInfoBtn.addEventListener('click', () => {
+    try { chrome.runtime.openOptionsPage() } catch {}
+})
 
 function renderChecklist(text) {
     if (!text || !text.trim()) {
@@ -164,16 +170,33 @@ window.addEventListener('resize', () => {
     if (bubble.style.left) moveBubbleTo(parseFloat(bubble.style.left), parseFloat(bubble.style.top))
 })
 
-function startTask(task) {
+// keep only non-empty string fields, trimmed; return null if nothing is left,
+// so an empty profile is never sent and the backend behaves as if there is none
+function pruneProfile(p) {
+    if (!p || typeof p !== 'object') return null
+    const out = {}
+    for (const [k, v] of Object.entries(p)) {
+        if (typeof v === 'string' && v.trim()) out[k] = v.trim()
+    }
+    return Object.keys(out).length ? out : null
+}
+
+async function startTask(task) {
     status.textContent = 'Thinking...'
     renderChecklist('')  // clear any previous task's plan
     setTaskRunning(true)
+    let profile = null
+    try {
+        const { userProfile, useProfile } = await chrome.storage.local.get(['userProfile', 'useProfile'])
+        if (useProfile !== false) profile = pruneProfile(userProfile)  // default-on
+    } catch {}
     sendToBackground({
         type: 'start_task',
         task,
         url: window.location.href,
         title: document.title,
-        dom_tree: extractAccessibilityTree()
+        dom_tree: extractAccessibilityTree(),
+        ...(profile ? { profile } : {})
     })
 }
 
