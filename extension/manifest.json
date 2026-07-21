@@ -16,5 +16,6 @@
   }],
   "action": {
     "default_icon": "icons/icon128.png"
-  }
+  },
+  "options_page": "options.html"
 }
