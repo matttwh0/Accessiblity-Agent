@@ -53,3 +53,60 @@ def test_profile_block_instructs_type_action_and_forbids_invention():
     block = _profile_block(UserProfile(email="ada@example.com"))
     assert "type" in block
     assert "never invent" in block.lower()
+
+
+import asyncio
+from types import SimpleNamespace
+
+import clients.claude as claude_mod
+from agent.schemas import AgentState, UserProfile, PageContext, DOMNode
+
+
+def _make_state(profile=None):
+    return AgentState(
+        task="fill the signup form",
+        context=PageContext(
+            url="https://example.com",
+            title="Signup",
+            dom_tree=[DOMNode(tag="input", label="Email", selector="#email")],
+        ),
+        profile=profile,
+    )
+
+
+def _patch_capture(monkeypatch):
+    """Replace _call_claude with a stub that captures the user message and
+    returns a minimal valid tool_use response."""
+    captured = {}
+
+    async def fake_call(label, **kwargs):
+        captured["user_message"] = kwargs["messages"][0]["content"]
+        block = SimpleNamespace(
+            type="tool_use",
+            input={"type": "click", "selector": "#email", "description": "x"},
+        )
+        return SimpleNamespace(content=[block])
+
+    monkeypatch.setattr(claude_mod, "_call_claude", fake_call)
+    return captured
+
+
+def test_stream_action_includes_profile_when_set(monkeypatch):
+    captured = _patch_capture(monkeypatch)
+    state = _make_state(UserProfile(email="ada@example.com"))
+    asyncio.run(claude_mod.stream_action(state))
+    assert "User's saved info" in captured["user_message"]
+    assert "ada@example.com" in captured["user_message"]
+
+
+def test_stream_action_omits_profile_when_none(monkeypatch):
+    captured = _patch_capture(monkeypatch)
+    asyncio.run(claude_mod.stream_action(_make_state(None)))
+    assert "User's saved info" not in captured["user_message"]
+
+
+def test_stream_recovery_action_includes_profile_when_set(monkeypatch):
+    captured = _patch_capture(monkeypatch)
+    state = _make_state(UserProfile(email="ada@example.com"))
+    asyncio.run(claude_mod.stream_recovery_action(state))
+    assert "User's saved info" in captured["user_message"]

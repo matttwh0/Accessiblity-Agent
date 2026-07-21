@@ -607,6 +607,7 @@ Accessibility tree:
 Previous actions: {json.dumps([a.model_dump(exclude={'updated_checklist'}, exclude_none=True) for a in state.actions_taken[-5:]], separators=(",", ":"))}
 
 What is the next action?"""
+    user_message += _profile_block(state.profile)
 
     if state.last_action_result:
         user_message += (
@@ -664,6 +665,7 @@ Current accessibility tree:
 {dom_str}
 
 Reconsider and choose a DIFFERENT next action."""
+    user_message += _profile_block(state.profile)
 
     response = await _call_claude(
         "recover",
