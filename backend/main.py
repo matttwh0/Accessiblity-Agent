@@ -91,7 +91,7 @@ async def agent_endpoint(ws: WebSocket):
                 # bad input value, so swallow it WITHOUT logging any field values —
                 # the profile must never reach the logs
                 try:
-                    profile = UserProfile(**profile_data) if profile_data else None
+                    profile = UserProfile(**profile_data) if isinstance(profile_data, dict) else None
                 except ValidationError:
                     logger.warning("start_task: ignoring malformed profile")
                     profile = None

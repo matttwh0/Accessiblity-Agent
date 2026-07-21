@@ -104,3 +104,22 @@ def test_stream_recovery_action_includes_profile_when_set(monkeypatch):
     state = _make_state(UserProfile(email="ada@example.com"))
     asyncio.run(claude_mod.stream_recovery_action(state))
     assert "User's saved info" in captured["user_message"]
+
+
+def test_decide_action_does_not_log_typed_value(monkeypatch, caplog):
+    # A `type` action carries user PII (saved-profile values). decide_action must
+    # NOT emit that value to the logs — the feature's core privacy invariant.
+    import logging
+    from agent.nodes import decide_action
+    from agent.schemas import AgentAction, ActionType
+
+    async def fake_stream_action(state, rejection_note=None):
+        return AgentAction(type=ActionType.TYPE, selector="#email",
+                           value="ada@secret.example.com", description="fill the email field",
+                           updated_checklist="[x] done")
+
+    monkeypatch.setattr("agent.nodes.stream_action", fake_stream_action)
+    state = _make_state(None)
+    with caplog.at_level(logging.INFO, logger="agent.nodes"):
+        asyncio.run(decide_action(state))
+    assert "ada@secret.example.com" not in caplog.text

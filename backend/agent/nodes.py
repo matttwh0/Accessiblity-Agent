@@ -81,8 +81,12 @@ async def decide_action(state: AgentState) -> AgentState:
 
     logger.info("[TIMING] decide=%.2fs (incl %d done-gate retr%s)",
                 time.perf_counter() - t0, retries, "y" if retries == 1 else "ies")
+    # `type` is the only action carrying user-typed text — including saved-profile
+    # PII — so its value must never be logged. Other actions' values are URLs/keys
+    # and stay visible for debugging. (The recover-path log already omits value.)
+    _log_value = "***" if action.type == ActionType.TYPE else action.value
     logger.info("[DECIDE] → %s  selector=%s  value=%r  desc=%r",
-                action.type, action.selector or "-", action.value, action.description)
+                action.type, action.selector or "-", _log_value, action.description)
     state.actions_taken.append(action)
     state.steps += 1
     if action.type in (ActionType.DONE, ActionType.FAILED):
