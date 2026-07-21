@@ -555,6 +555,34 @@ def _cached_system(text: str) -> list:
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
 
+def _profile_block(profile) -> str:
+    """Format a UserProfile as a prompt block, omitting empty fields. Returns ""
+    when there is nothing to show, so callers can append unconditionally."""
+    if not profile:
+        return ""
+    fields = [
+        ("Full name", profile.fullName),
+        ("Email", profile.email),
+        ("Phone", profile.phone),
+        ("Street address", profile.street),
+        ("City", profile.city),
+        ("State/region", profile.state),
+        ("ZIP/postcode", profile.zip),
+        ("Country", profile.country),
+    ]
+    lines = [f"- {label}: {val.strip()}"
+             for label, val in fields if val and val.strip()]
+    if profile.notes and profile.notes.strip():
+        lines.append(f"- Notes: {profile.notes.strip()}")
+    if not lines:
+        return ""
+    return (
+        "\n\nUser's saved info — when a form field matches one of these, fill it "
+        "in with the `type` action. Never invent values you don't have here:\n"
+        + "\n".join(lines)
+    )
+
+
 async def stream_action(state: AgentState, rejection_note: str = None) -> AgentAction:
     dom_str = serialize_dom(state.context.dom_tree)
     _log_serialized_dom("decide", state.context.dom_tree, dom_str)
