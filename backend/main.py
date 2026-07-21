@@ -30,6 +30,7 @@ logger = logging.getLogger("agent.main")
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from pydantic import ValidationError
 import json
 
 from agent.graph import build_graph
@@ -86,10 +87,17 @@ async def agent_endpoint(ws: WebSocket):
                 reset_usage()
                 task_started_at = msg_received_at
                 profile_data = msg.get("profile")
+                # build defensively: a pydantic ValidationError message embeds the
+                # bad input value, so swallow it WITHOUT logging any field values —
+                # the profile must never reach the logs
+                try:
+                    profile = UserProfile(**profile_data) if profile_data else None
+                except ValidationError:
+                    logger.warning("start_task: ignoring malformed profile")
+                    profile = None
                 state = AgentState(
                     task=msg["task"],
-                    # profile is never logged — do not add it to any log line
-                    profile=UserProfile(**profile_data) if profile_data else None,
+                    profile=profile,  # never logged
                     context=PageContext(
                         url=msg["url"],
                         title=msg["title"],

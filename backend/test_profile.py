@@ -1,6 +1,11 @@
 # Tests for the user-profile autofill feature: schema, prompt-block formatting,
 # and that the profile reaches the agent's decide/recover prompts.
+import asyncio
+from types import SimpleNamespace
+
+import clients.claude as claude_mod
 from agent.schemas import AgentState, UserProfile, PageContext, DOMNode
+from clients.claude import _profile_block
 
 
 def make_context():
@@ -23,10 +28,6 @@ def test_agentstate_accepts_userprofile_from_dict():
     assert state.profile.fullName == "Ada"
     # unset fields default to None
     assert state.profile.phone is None
-
-
-from clients.claude import _profile_block
-from agent.schemas import UserProfile
 
 
 def test_profile_block_empty_for_none():
@@ -53,13 +54,6 @@ def test_profile_block_instructs_type_action_and_forbids_invention():
     block = _profile_block(UserProfile(email="ada@example.com"))
     assert "type" in block
     assert "never invent" in block.lower()
-
-
-import asyncio
-from types import SimpleNamespace
-
-import clients.claude as claude_mod
-from agent.schemas import AgentState, UserProfile, PageContext, DOMNode
 
 
 def _make_state(profile=None):

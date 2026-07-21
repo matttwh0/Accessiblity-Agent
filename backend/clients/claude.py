@@ -4,10 +4,11 @@ import os
 import re
 import time
 import json
+from typing import Optional
 from dotenv import load_dotenv
 import anthropic
 from anthropic import AsyncAnthropic
-from agent.schemas import AgentState, AgentAction
+from agent.schemas import AgentState, AgentAction, UserProfile
 
 logger = logging.getLogger("agent.claude")
 
@@ -555,7 +556,7 @@ def _cached_system(text: str) -> list:
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
 
-def _profile_block(profile) -> str:
+def _profile_block(profile: Optional[UserProfile]) -> str:
     """Format a UserProfile as a prompt block, omitting empty fields. Returns ""
     when there is nothing to show, so callers can append unconditionally."""
     if not profile:
