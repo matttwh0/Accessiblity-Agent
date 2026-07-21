@@ -318,7 +318,9 @@ function startTask(tabId, msg) {
             task: msg.task,
             url: msg.url,
             title: msg.title,
-            dom_tree: msg.dom_tree
+            dom_tree: msg.dom_tree,
+            // present only when the user has a profile and hasn't disabled it
+            ...(msg.profile ? { profile: msg.profile } : {})
         }))
     }
 
