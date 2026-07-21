@@ -556,7 +556,7 @@ function awaitSettle(expect, { quietMs = 200, minMs = 1200, maxMs = 2500 } = {})
 
 async function handleExecuteAction(msg) {
     showPanel()
-    console.log('Agent action:', msg)
+    console.debug('a11y-agent: executing', msg.action?.type)
     status.textContent = msg.action.description
     renderChecklist(msg.checklist)  // re-render: check-offs and mid-loop revisions
 
