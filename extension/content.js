@@ -1,4 +1,7 @@
-// create the floating bubble
+// create the floating bubble — removing any copy left by a previous injection
+// (reloading the extension orphans this script but leaves its DOM behind, and
+// the background re-injects us into such tabs before starting a dictation)
+document.getElementById('a11y-agent-bubble')?.remove()
 const bubble = document.createElement('div')
 bubble.id = 'a11y-agent-bubble'
 bubble.innerHTML = `
@@ -54,8 +57,111 @@ function renderChecklist(text) {
 }
 
 icon.addEventListener('click', () => {
-    panel.style.display = panel.style.display === 'none' ? 'block' : 'none'
-    if (panel.style.display === 'block') input.focus()
+    // a press that turned into a drag reaches here as a click too — ignore it
+    // so repositioning the icon never also opens/closes the panel
+    if (suppressClick) { suppressClick = false; return }
+    if (panel.style.display === 'none') {
+        positionPanel()
+        panel.style.display = 'block'
+        input.focus()
+    } else {
+        panel.style.display = 'none'
+    }
+})
+
+// --- draggable icon -------------------------------------------------------
+// The bubble sits bottom-right by default; dragging the 🤖 icon pins it with
+// left/top instead and remembers the spot (per browser) so it stays put across
+// page loads. A drag must not also fire the panel-toggle click, and the panel
+// opens toward whichever screen edges have room once the icon has moved.
+const DRAG_THRESHOLD = 4  // px of travel before a press counts as a drag
+let dragState = null      // { startX, startY, grabX, grabY, moved } while pressing
+let suppressClick = false
+
+function clampToViewport(left, top) {
+    const maxLeft = Math.max(0, window.innerWidth - bubble.offsetWidth)
+    const maxTop = Math.max(0, window.innerHeight - bubble.offsetHeight)
+    return {
+        left: Math.max(0, Math.min(left, maxLeft)),
+        top: Math.max(0, Math.min(top, maxTop)),
+    }
+}
+
+function moveBubbleTo(left, top) {
+    const c = clampToViewport(left, top)
+    bubble.style.left = c.left + 'px'
+    bubble.style.top = c.top + 'px'
+    bubble.style.right = 'auto'
+    bubble.style.bottom = 'auto'
+    return c
+}
+
+// Anchor the panel to the icon's corner that has the most room, so a bubble
+// dragged to the top or left doesn't open its panel off-screen.
+function positionPanel() {
+    const r = icon.getBoundingClientRect()
+    if (r.top < window.innerHeight / 2) {
+        panel.style.top = '70px'; panel.style.bottom = 'auto'
+    } else {
+        panel.style.bottom = '70px'; panel.style.top = 'auto'
+    }
+    if (r.left > window.innerWidth / 2) {
+        panel.style.right = '0'; panel.style.left = 'auto'
+    } else {
+        panel.style.left = '0'; panel.style.right = 'auto'
+    }
+}
+
+icon.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return
+    const rect = bubble.getBoundingClientRect()
+    dragState = {
+        startX: e.clientX,
+        startY: e.clientY,
+        // where inside the bubble the pointer grabbed, so it doesn't jump
+        grabX: e.clientX - rect.left,
+        grabY: e.clientY - rect.top,
+        moved: false,
+    }
+    try { icon.setPointerCapture(e.pointerId) } catch {}
+})
+
+icon.addEventListener('pointermove', (e) => {
+    if (!dragState) return
+    if (!dragState.moved &&
+        Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY) < DRAG_THRESHOLD) return
+    dragState.moved = true
+    icon.classList.add('dragging')
+    // moving the icon closes the panel so it can't hang detached mid-drag
+    panel.style.display = 'none'
+    moveBubbleTo(e.clientX - dragState.grabX, e.clientY - dragState.grabY)
+})
+
+function endDrag(e) {
+    if (!dragState) return
+    const moved = dragState.moved
+    dragState = null
+    icon.classList.remove('dragging')
+    try { icon.releasePointerCapture(e.pointerId) } catch {}
+    if (moved) {
+        suppressClick = true  // this press was a drag — the click it spawns is not a toggle
+        const r = bubble.getBoundingClientRect()
+        try { chrome.storage.local.set({ bubblePos: { left: r.left, top: r.top } }) } catch {}
+    }
+}
+icon.addEventListener('pointerup', endDrag)
+icon.addEventListener('pointercancel', endDrag)
+
+// restore the saved spot (persisted per browser, not per site)
+try {
+    chrome.storage.local.get('bubblePos').then(({ bubblePos }) => {
+        if (bubblePos) moveBubbleTo(bubblePos.left, bubblePos.top)
+    }).catch(() => {})
+} catch {}
+
+// keep the bubble on-screen when the window shrinks past its pinned spot
+window.addEventListener('resize', () => {
+    if (bubble.style.left) moveBubbleTo(parseFloat(bubble.style.left), parseFloat(bubble.style.top))
 })
 
 function startTask(task) {
@@ -149,26 +255,21 @@ wakeBtn.addEventListener('click', () => {
     try { chrome.storage.local.set({ wakeWordEnabled: wakeOn }) } catch {}
 })
 
-// restore the user's choice (persisted per browser, not per site)
+// restore the user's choice (persisted per browser, not per site), and stay
+// in sync: the toggle can change from any tab, and closing the Voice Hub tab
+// flips it off — every page's 👂 button should reflect that immediately
 try {
     chrome.storage.local.get('wakeWordEnabled').then(({ wakeWordEnabled }) => {
         wakeOn = !!wakeWordEnabled
         renderWakeBtn()
     }).catch(() => {})
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && changes.wakeWordEnabled) {
+            wakeOn = !!changes.wakeWordEnabled.newValue
+            renderWakeBtn()
+        }
+    })
 } catch {}
-
-// Invisible extension iframe hosting the wake-word listener (wake.js).
-// Extension origin -> the one-time mic grant covers it on every site, and
-// SpeechRecognition works here (Chrome refuses it in offscreen documents).
-// Inert until the background elects this tab's frame to listen. WAR-listed
-// extension resources bypass page CSP, so injection works everywhere.
-if (extensionAlive()) {
-    const wakeFrame = document.createElement('iframe')
-    wakeFrame.src = chrome.runtime.getURL('wake.html')
-    wakeFrame.allow = 'microphone'   // required for a cross-origin frame to use the mic
-    wakeFrame.style.display = 'none'
-    document.body.appendChild(wakeFrame)
-}
 
 // Extracts the interactive elements as an accessibility tree, addressing each
 // by an opaque, per-snapshot stable id stamped onto the DOM node itself
@@ -280,7 +381,12 @@ function sendToBackground(payload) {
 // The background service worker owns the WebSocket (so the task survives
 // page navigations). This script just executes actions and reports back.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.type === 'execute_action') {
+    if (msg.type === 'ping') {
+        // reachability probe from the background: an orphaned copy of this
+        // script (extension was reloaded) can never answer, so a reply proves
+        // a live script is here to receive voice transcripts
+        sendResponse('pong')
+    } else if (msg.type === 'execute_action') {
         setTaskRunning(true)  // a freshly-loaded page learns a task is mid-flight
         handleExecuteAction(msg)
     } else if (msg.type === 'agent_update') {
@@ -457,6 +563,7 @@ async function handleExecuteAction(msg) {
 
 function showPanel() {
     if (panel.style.display === 'none') {
+        positionPanel()
         panel.style.display = 'block'
     }
 }

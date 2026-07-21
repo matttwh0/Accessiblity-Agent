@@ -15,8 +15,19 @@
     align-items: center;
     justify-content: center;
     font-size: 24px;
-    cursor: pointer;
+    cursor: grab;
     box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    /* the icon is a drag handle — don't let a drag select page text or fire
+       the browser's native image/text drag */
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+}
+
+#a11y-agent-icon.dragging {
+    cursor: grabbing;
+    /* lift it while moving so it reads as detached from the page */
+    box-shadow: 0 8px 20px rgba(0,0,0,0.25);
 }
 
 #a11y-agent-panel {

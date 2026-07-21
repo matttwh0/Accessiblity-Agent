@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<!-- The Voice Hub: a small pinned extension tab that is the ONE place the
+     wake-word listener runs. A top-level extension page is the only context
+     where both getUserMedia and SpeechRecognition answer to the extension's
+     own permission — content scripts and iframes are subject to each site's
+     Permissions-Policy, and offscreen documents can't run SpeechRecognition.
+     Also hosts the one-time mic grant button, so no separate setup popups. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Helper voice</title>
+<link rel="icon" href="icons/icon128.png">
+<style>
+  body {
+    font-family: -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 90vh;
+    gap: 16px;
+    text-align: center;
+    color: #111827;
+  }
+  #state { font-size: 26px; font-weight: 600; margin: 0; }
+  #detail { font-size: 17px; color: #6b7280; max-width: 32em; margin: 0; }
+  #enable {
+    display: none;
+    font-size: 20px;
+    font-weight: 600;
+    padding: 14px 32px;
+    border: none;
+    border-radius: 10px;
+    background: #3B82F6;
+    color: white;
+    cursor: pointer;
+  }
+  #enable:hover { background: #2563eb; }
+  .dot {
+    width: 14px; height: 14px; border-radius: 50%;
+    display: inline-block; margin-right: 8px;
+    background: #9ca3af;
+  }
+  .dot.live { background: #22c55e; animation: pulse 1.4s ease-out infinite; }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5); }
+    70%  { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+  }
+</style>
+</head>
+<body>
+  <h1 id="state"><span class="dot" id="dot"></span><span id="stateText">Starting…</span></h1>
+  <p id="detail">Keep this small tab open — it's how your helper hears "Hey Helper".</p>
+  <button id="enable">🎤 Turn on voice</button>
+  <script src="voice.js"></script>
+</body>
+</html>

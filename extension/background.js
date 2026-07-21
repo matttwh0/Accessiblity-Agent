@@ -13,6 +13,22 @@ const sessions = new Map() // tabId -> { ws, state, pendingAction }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+// Chrome locks the tab strip while the user drags a tab, and every tab-edit
+// API rejects with "Tabs cannot be edited right now". The lock is transient
+// (it lifts when the drag ends), so retry briefly instead of failing the
+// agent's action — and never let the rejection escape uncaught.
+async function editTab(fn, attempts = 4) {
+    for (let i = 0; ; i++) {
+        try {
+            return await fn()
+        } catch (err) {
+            const transient = /cannot be edited/i.test(String(err?.message || err))
+            if (!transient || i >= attempts - 1) throw err
+            await sleep(250)
+        }
+    }
+}
+
 // MV3 terminates an idle service worker after ~30s. An open chrome.runtime
 // port from the content script is the only reliable keepalive — setInterval
 // can be suspended by Chrome before it fires and doesn't prevent termination.
@@ -52,38 +68,71 @@ function sendToOffscreen(msg) {
     chrome.runtime.sendMessage({ target: 'offscreen', ...msg }).catch(() => {})
 }
 
-// Wake-word election: exactly ONE wake frame (the active tab's) may listen,
-// decided from three inputs — the user's toggle (chrome.storage), whether a
-// Chrome window has focus (privacy: never listen from another app), and
-// which tab is active. Frames self-disarm when their tab is hidden, so a
-// stale 'on' can't leave a background tab holding the mic.
-let wakeTabId = null  // tab whose frame we last told to listen
+// The Voice Hub: ONE pinned extension tab (voice.html) hosts the wake-word
+// listener — the only context where getUserMedia and SpeechRecognition both
+// answer to the extension's own permission (content scripts and iframes are
+// subject to each site's Permissions-Policy; offscreen docs can't run SR).
+// The hub exists while the toggle is on and pauses when Chrome loses focus.
+const VOICE_HUB_URL = chrome.runtime.getURL('voice.html')
 
-function sendWakeCmd(tabId, on) {
-    // reaches every extension frame in the tab; the wake frame filters on
-    // target, the content script ignores unknown types
-    chrome.tabs.sendMessage(tabId, { target: 'wake-frame', type: 'wake_listen', on }).catch(() => {})
+async function findVoiceHub() {
+    try {
+        const tabs = await chrome.tabs.query({ url: VOICE_HUB_URL })
+        return tabs[0]?.id ?? null
+    } catch { return null }
 }
 
-async function updateWakeElection() {
+function sendHubCmd(tabId, on, off = false) {
+    chrome.tabs.sendMessage(tabId, { target: 'voice-hub', type: 'wake_listen', on, off }).catch(() => {})
+}
+
+async function updateVoiceHub() {
     let enabled = false
     try { enabled = !!(await chrome.storage.local.get('wakeWordEnabled')).wakeWordEnabled } catch {}
     let focused = false
     try { focused = !!(await chrome.windows.getLastFocused()).focused } catch {}
-    const active = await activeTabId()
-    const target = (enabled && focused && active != null) ? active : null
-    if (wakeTabId != null && wakeTabId !== target) sendWakeCmd(wakeTabId, false)
-    if (target != null) sendWakeCmd(target, true)
-    wakeTabId = target
+    let hub = await findVoiceHub()
+    if (!enabled) {
+        // toggle is off — the hub tab has no job; close it to keep things tidy
+        if (hub != null) editTab(() => chrome.tabs.remove(hub)).catch(() => {})
+        return
+    }
+    // pre-create the offscreen document while voice is on: the wake→dictation
+    // hand-off then skips document creation, so fewer of the user's first
+    // words fall into the startup gap
+    ensureOffscreen().catch(() => {})
+    if (hub == null) {
+        try {
+            const tab = await editTab(() => chrome.tabs.create({ url: VOICE_HUB_URL, pinned: true, active: false }))
+            hub = tab.id
+            // freshly created page isn't listening yet — it announces with
+            // voice_hub_ready, which re-runs this reconcile
+            return
+        } catch (err) {
+            console.warn('a11y-agent: could not open voice hub:', err)
+            return
+        }
+    }
+    sendHubCmd(hub, focused)  // paused (not off) while Chrome is unfocused
 }
 
-chrome.tabs.onActivated.addListener(() => { updateWakeElection() })
-chrome.windows.onFocusChanged.addListener(() => { updateWakeElection() })
+chrome.windows.onFocusChanged.addListener(() => { updateVoiceHub() })
 chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes.wakeWordEnabled) updateWakeElection()
+    if (area === 'local' && changes.wakeWordEnabled) updateVoiceHub()
 })
-chrome.runtime.onStartup.addListener(() => { updateWakeElection() })
-updateWakeElection()  // service worker (re)started — reconcile now
+chrome.runtime.onStartup.addListener(() => { updateVoiceHub() })
+updateVoiceHub()  // service worker (re)started — reconcile now
+
+// closing the hub tab = turning voice off; flip the shared toggle so every
+// page's 👂 button reflects reality (they watch storage)
+chrome.tabs.onRemoved.addListener(async () => {
+    try {
+        const { wakeWordEnabled } = await chrome.storage.local.get('wakeWordEnabled')
+        if (wakeWordEnabled && (await findVoiceHub()) == null) {
+            chrome.storage.local.set({ wakeWordEnabled: false })
+        }
+    } catch {}
+})
 
 async function activeTabId() {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
@@ -100,8 +149,39 @@ async function dictationTarget() {
     return activeTabId()
 }
 
+// The dictation's transcripts and the resulting start_task all land in the
+// target tab's content script — if none is listening there, the whole command
+// would vanish silently. A script can be missing because the page loaded
+// before the extension was (re)loaded (orphaned copy) — re-inject it — or
+// because the page can't be scripted at all (chrome://, Web Store), in which
+// case say so on the Voice Hub instead of dying silently.
+async function ensureContentScript(tabId) {
+    if (tabId == null) return false
+    try {
+        await chrome.tabs.sendMessage(tabId, { type: 'ping' })
+        return true
+    } catch {}
+    try {
+        await chrome.scripting.insertCSS({ target: { tabId }, files: ['bubble.css'] })
+        await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] })
+        return true
+    } catch {
+        return false
+    }
+}
+
 async function startDictationForTab(tabId) {
     dictationTabId = tabId ?? (await activeTabId())
+    if (!(await ensureContentScript(dictationTabId))) {
+        const hub = await findVoiceHub()
+        if (hub != null) chrome.tabs.sendMessage(hub, {
+            target: 'voice-hub', type: 'hub_notice',
+            text: "I can't help on this page — switch to a normal website tab and say \"Hey Helper\" again.",
+        }).catch(() => {})
+        dictationTabId = null
+        updateVoiceHub()  // resume wake listening instead of hanging
+        return
+    }
     try { chrome.storage.session.set({ dictationTabId }) } catch {}
     await ensureOffscreen()
     sendToOffscreen({ type: 'offscreen_dictate_start' })
@@ -109,14 +189,13 @@ async function startDictationForTab(tabId) {
 
 // messages from extension pages: offscreen doc, permission page, wake frames
 async function onExtensionPageMessage(msg, sender) {
-    if (msg.type === 'wake_frame_ready') {
-        // a page (re)loaded its wake frame — re-run the election so the
-        // active tab's fresh frame gets armed
-        updateWakeElection()
+    if (msg.type === 'voice_hub_ready') {
+        // the hub page (re)loaded — reconcile so it gets its listen command
+        updateVoiceHub()
     } else if (msg.type === 'wake_heard') {
-        // the wake frame stopped itself before sending; bind the dictation
-        // to the tab the user was speaking into
-        startDictationForTab(sender?.tab?.id ?? null)
+        // the hub stopped listening before sending; the command belongs to
+        // whatever tab the user is actually looking at
+        startDictationForTab(null)
     } else if (msg.type === 'dictation_started') {
         if (dictationTabId == null) {  // wake-word-triggered — bind to active tab
             dictationTabId = await activeTabId()
@@ -127,7 +206,7 @@ async function onExtensionPageMessage(msg, sender) {
         notify(await dictationTarget(), { type: 'voice_state', recording: false })
         dictationTabId = null
         try { chrome.storage.session.remove('dictationTabId') } catch {}
-        updateWakeElection()  // hand the mic back to the wake listener
+        updateVoiceHub()  // hand the mic back to the wake listener
     } else if (msg.type === 'dictation_transcript') {
         notify(await dictationTarget(), { type: 'voice_transcript', text: msg.text, is_final: msg.is_final })
         // end-of-turn = the command is complete; stop capturing (and billing)
@@ -144,26 +223,31 @@ async function onExtensionPageMessage(msg, sender) {
             for (const id of [...sessions.keys()]) stopTask(id)
         }
     } else if (msg.type === 'mic_permission_needed') {
-        // one-time setup: the grant on this extension page covers every site.
-        // A mic click ('dictation') always reopens the page — the user just
-        // acted. Wake-triggered requests open it at most once per browser
-        // session, so focus changes can't spam setup tabs.
-        const explicit = msg.source === 'dictation'
-        let opened = false
-        try { opened = !!(await chrome.storage.session.get('permissionPageOpened')).permissionPageOpened } catch {}
-        if (explicit || !opened) {
-            try { chrome.storage.session.set({ permissionPageOpened: true }) } catch {}
-            chrome.tabs.create({ url: chrome.runtime.getURL('permission.html') })
+        // dictation (offscreen getUserMedia) failed. If the extension already
+        // holds the grant, the failure is elsewhere — e.g. Chrome lacks
+        // OS-level mic access — and no setup UI can help; say so instead.
+        let granted = false
+        try { granted = (await navigator.permissions.query({ name: 'microphone' })).state === 'granted' } catch {}
+        const t = await dictationTarget()
+        if (granted) {
+            if (t != null) notify(t, {
+                type: 'voice_error',
+                error: 'Microphone unavailable — check that Chrome has mic access in your system settings'
+            })
+        } else {
+            // send the user to the Voice Hub, which hosts the grant button —
+            // focusing an existing hub is idempotent, so this can never spam
+            let hub = await findVoiceHub()
+            if (hub == null) {
+                try { hub = (await editTab(() => chrome.tabs.create({ url: VOICE_HUB_URL, pinned: true }))).id } catch {}
+            }
+            if (hub != null) editTab(() => chrome.tabs.update(hub, { active: true })).catch(() => {})
+            if (t != null) notify(t, { type: 'voice_error', error: 'Voice needs a one-time setup — see the Helper voice tab' })
         }
-        if (explicit) {
-            const t = await dictationTarget()
-            if (t != null) notify(t, { type: 'voice_error', error: 'Voice needs a one-time setup — see the tab that just opened' })
-            dictationTabId = null
-            try { chrome.storage.session.remove('dictationTabId') } catch {}
-        }
+        dictationTabId = null
+        try { chrome.storage.session.remove('dictationTabId') } catch {}
     } else if (msg.type === 'mic_permission_granted') {
-        try { chrome.storage.session.remove('permissionPageOpened') } catch {}
-        updateWakeElection()  // the 'on' command lifts the frame's blocked latch
+        updateVoiceHub()  // hub granted — reconcile so it starts listening
     }
 }
 
@@ -330,20 +414,20 @@ async function executeBrowserAction(tabId, session, msg) {
         switch (action.type) {
             case 'navigate':
                 if (!action.value) throw new Error('navigate action is missing a URL in "value"')
-                await chrome.tabs.update(tabId, { url: action.value })
+                await editTab(() => chrome.tabs.update(tabId, { url: action.value }))
                 break
             case 'back':
-                await chrome.tabs.goBack(tabId)
+                await editTab(() => chrome.tabs.goBack(tabId))
                 break
             case 'forward':
-                await chrome.tabs.goForward(tabId)
+                await editTab(() => chrome.tabs.goForward(tabId))
                 break
             case 'reload':
-                await chrome.tabs.reload(tabId)
+                await editTab(() => chrome.tabs.reload(tabId))
                 break
             case 'new_tab': {
                 if (!action.value) throw new Error('new_tab action is missing a URL in "value"')
-                const tab = await chrome.tabs.create({ url: action.value, active: true })
+                const tab = await editTab(() => chrome.tabs.create({ url: action.value, active: true }))
                 // the session follows the agent into the new tab
                 sessions.delete(tabId)
                 sessions.set(tab.id, session)
