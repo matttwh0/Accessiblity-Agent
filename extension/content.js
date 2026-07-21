@@ -31,6 +31,10 @@ const status = document.getElementById('a11y-agent-status')
 const myInfoBtn = document.getElementById('a11y-agent-myinfo')
 
 myInfoBtn.addEventListener('click', () => {
+    if (!extensionAlive()) {
+        status.textContent = '⚠ Extension was updated — refresh this page and try again'
+        return
+    }
     try { chrome.runtime.openOptionsPage() } catch {}
 })
 

@@ -44,7 +44,7 @@
     cursor: pointer;
   }
   #save:hover { background: #2563eb; }
-  #status { margin-left: 12px; color: #16a34a; font-size: 14px; }
+  #status { margin-left: 12px; color: #15803d; font-size: 14px; }
 </style>
 </head>
 <body>
@@ -59,7 +59,7 @@
     <div>
       <label for="email">Email</label>
       <input id="email" autocomplete="off">
-      <div class="hint" id="emailHint"></div>
+      <div class="hint" id="emailHint" aria-live="polite"></div>
     </div>
     <div>
       <label for="phone">Phone</label>
@@ -101,7 +101,7 @@
   </div>
 
   <button id="save">Save</button>
-  <span id="status"></span>
+  <span id="status" aria-live="polite"></span>
 
   <script src="options.js"></script>
 </body>
