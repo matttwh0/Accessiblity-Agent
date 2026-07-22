@@ -35,7 +35,9 @@ myInfoBtn.addEventListener('click', () => {
         status.textContent = '⚠ Extension was updated — refresh this page and try again'
         return
     }
-    try { chrome.runtime.openOptionsPage() } catch {}
+    // chrome.runtime.openOptionsPage is NOT exposed to content scripts (only
+    // the messaging subset of chrome.runtime is) — ask the background to open it
+    sendToBackground({ type: 'open_options' })
 })
 
 function renderChecklist(text) {

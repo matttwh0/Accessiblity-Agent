@@ -273,6 +273,8 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     else if (msg.type === 'stop_task') stopTask(tabId)
     else if (msg.type === 'voice_start') startDictationForTab(tabId)
     else if (msg.type === 'voice_stop') sendToOffscreen({ type: 'offscreen_dictate_stop' })
+    // content scripts can't call openOptionsPage themselves — do it for them
+    else if (msg.type === 'open_options') chrome.runtime.openOptionsPage()
     else if (msg.type === 'action_executed') onActionExecuted(tabId, msg)
     else if (msg.type === 'content_ready') onContentReady(tabId, msg)
 })
