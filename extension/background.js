@@ -170,7 +170,24 @@ async function ensureContentScript(tabId) {
     }
 }
 
+// --- spoken narration ------------------------------------------------------
+// The agent TALKS the user through each step (the audience is older and
+// non-technical; the prompt writes descriptions to be heard, not read).
+// chrome.tts is Chrome's built-in engine — free, offline, no keys — behind
+// this one helper so a neural-voice service could be swapped in later.
+// Gated by the 🔊 toggle (speechEnabled, default ON). Each utterance
+// interrupts the previous one so speech never lags behind the page.
+async function speak(text) {
+    if (!text) return
+    let enabled = true
+    try { enabled = (await chrome.storage.local.get('speechEnabled')).speechEnabled !== false } catch {}
+    if (!enabled) return
+    try { chrome.tts.speak(text, { rate: 0.9, enqueue: false }) } catch {}
+}
+
 async function startDictationForTab(tabId) {
+    // never talk over (or into) the microphone the user is about to speak into
+    try { chrome.tts.stop() } catch {}
     dictationTabId = tabId ?? (await activeTabId())
     if (!(await ensureContentScript(dictationTabId))) {
         const hub = await findVoiceHub()
@@ -370,15 +387,24 @@ function onBackendMessage(tabId, msg) {
     session.pendingExpect = msg.action.expect ?? null
 
     if (msg.status === 'done' || msg.status === 'failed') {
+        // a chat answer carries its text in value; everything else ends with
+        // its short final description — both are shown AND spoken
+        const finalText = msg.action.type === 'answer'
+            ? (msg.action.value || msg.action.description)
+            : msg.action.description
+        speak(finalText)
         notify(tabId, {
             type: 'agent_update',
-            description: msg.action.description,
+            description: finalText,
             checklist: msg.checklist,
             ended: true
         })
         endSession(tabId)
         return
     }
+
+    // narrate the step out loud — the bubble shows only spinner + checklist
+    speak(msg.action.description)
 
     if (BROWSER_ACTIONS.has(msg.action.type)) {
         executeBrowserAction(tabId, session, msg)

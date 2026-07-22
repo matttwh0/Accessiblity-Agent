@@ -13,6 +13,7 @@ bubble.innerHTML = `
     </div>
     <button id="a11y-agent-stop" style="display:none">⏹ Stop helping</button>
     <button id="a11y-agent-wake">👂 Say "Hey Helper": Off</button>
+    <button id="a11y-agent-speech">🔊 Speak to me: On</button>
     <button id="a11y-agent-myinfo">⚙ My info</button>
     <div id="a11y-agent-checklist" style="display:none"></div>
     <div id="a11y-agent-status"></div>
@@ -29,6 +30,7 @@ const wakeBtn = document.getElementById('a11y-agent-wake')
 const checklist = document.getElementById('a11y-agent-checklist')
 const status = document.getElementById('a11y-agent-status')
 const myInfoBtn = document.getElementById('a11y-agent-myinfo')
+const speechBtn = document.getElementById('a11y-agent-speech')
 
 myInfoBtn.addEventListener('click', () => {
     if (!extensionAlive()) {
@@ -325,6 +327,40 @@ try {
         if (area === 'local' && changes.wakeWordEnabled) {
             wakeOn = !!changes.wakeWordEnabled.newValue
             renderWakeBtn()
+        }
+    })
+} catch {}
+
+// --- spoken narration toggle ----------------------------------------------
+// The background speaks each step aloud (see speak() there). This button
+// flips the shared speechEnabled setting — default ON: absent means enabled,
+// only an explicit false disables, matching the background's read.
+let speechOn = true
+
+function renderSpeechBtn() {
+    speechBtn.textContent = speechOn ? '🔊 Speak to me: On' : '🔇 Speak to me: Off'
+    speechBtn.classList.toggle('on', speechOn)
+}
+
+speechBtn.addEventListener('click', () => {
+    if (!extensionAlive()) {
+        status.textContent = '⚠ Extension was updated — refresh this page and try again'
+        return
+    }
+    speechOn = !speechOn
+    renderSpeechBtn()
+    try { chrome.storage.local.set({ speechEnabled: speechOn }) } catch {}
+})
+
+try {
+    chrome.storage.local.get('speechEnabled').then(({ speechEnabled }) => {
+        speechOn = speechEnabled !== false
+        renderSpeechBtn()
+    }).catch(() => {})
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && changes.speechEnabled) {
+            speechOn = changes.speechEnabled.newValue !== false
+            renderSpeechBtn()
         }
     })
 } catch {}
