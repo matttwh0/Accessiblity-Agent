@@ -140,6 +140,22 @@
     color: #6b7280;
 }
 
+.a11y-agent-spinner {
+    display: inline-block;
+    width: 13px;
+    height: 13px;
+    margin-right: 8px;
+    vertical-align: -2px;
+    border: 2px solid #e5e7eb;
+    border-top-color: #3B82F6;
+    border-radius: 50%;
+    animation: a11y-agent-rotate 0.9s linear infinite;
+}
+
+@keyframes a11y-agent-rotate {
+    to { transform: rotate(360deg); }
+}
+
 #a11y-agent-checklist {
     margin-bottom: 8px;
     max-height: 180px;

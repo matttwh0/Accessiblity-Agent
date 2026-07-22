@@ -187,8 +187,36 @@ function pruneProfile(p) {
     return Object.keys(out).length ? out : null
 }
 
+// --- working spinner ------------------------------------------------------
+// While the agent works, the status area shows a spinner + a rotating word.
+// The agent's step-by-step narration is SPOKEN aloud (see background.js), not
+// printed — the visual stays calm: spinner + checklist, then the final message.
+const SPIN_WORDS = ['Thinking…', 'Working on it…', 'Looking at the page…', 'One moment…', 'Almost there…']
+let spinTimer = null
+let spinIndex = 0
+
+function startSpinner() {
+    if (spinTimer) return  // already spinning — keep the current cadence
+    spinIndex = 0
+    const render = () => {
+        status.textContent = ''
+        const circle = document.createElement('span')
+        circle.className = 'a11y-agent-spinner'
+        status.appendChild(circle)
+        status.appendChild(document.createTextNode(SPIN_WORDS[spinIndex % SPIN_WORDS.length]))
+        spinIndex++
+    }
+    render()
+    spinTimer = setInterval(render, 2200)
+}
+
+function stopSpinner() {
+    clearInterval(spinTimer)
+    spinTimer = null
+}
+
 async function startTask(task) {
-    status.textContent = 'Thinking...'
+    startSpinner()
     renderChecklist('')  // clear any previous task's plan
     setTaskRunning(true)
     let profile = null
@@ -215,6 +243,7 @@ function setTaskRunning(running) {
 function stopAgent(voiceThanks) {
     sendToBackground({ type: 'stop_task' })
     setTaskRunning(false)
+    stopSpinner()
     status.textContent = voiceThanks ? "You're welcome! I've stopped." : 'Stopped.'
 }
 
@@ -420,8 +449,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         handleExecuteAction(msg)
     } else if (msg.type === 'agent_update') {
         showPanel()
-        if (msg.description) status.textContent = msg.description
         if (msg.checklist !== undefined) renderChecklist(msg.checklist)
+        if (msg.ended) {
+            // final message (done / couldn't finish / chat answer) IS shown
+            stopSpinner()
+            if (msg.description) status.textContent = msg.description
+        } else {
+            startSpinner()  // step narration is spoken, not printed
+        }
         setTaskRunning(!msg.ended)
     } else if (msg.type === 'voice_state') {
         // the offscreen mic started/stopped a dictation bound to this tab
@@ -559,13 +594,14 @@ function awaitSettle(expect, { quietMs = 200, minMs = 1200, maxMs = 2500 } = {})
 async function handleExecuteAction(msg) {
     showPanel()
     console.debug('a11y-agent: executing', msg.action?.type)
-    status.textContent = msg.action.description
+    startSpinner()  // narration is spoken, not printed
     renderChecklist(msg.checklist)  // re-render: check-offs and mid-loop revisions
 
     const result = await executeAction(msg.action)
     if (!result.success) {
+        // stay calm visually — the backend recovers (or ends with a clear
+        // final message); the raw selector error is jargon, not for the user
         console.warn('Action failed:', result.error)
-        status.textContent = `⚠ ${result.error}`
     }
 
     // Wait for the page to settle. If the action carried a prediction (expect),
