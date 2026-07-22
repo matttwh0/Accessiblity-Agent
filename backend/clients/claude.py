@@ -8,7 +8,8 @@ from typing import Optional
 from dotenv import load_dotenv
 import anthropic
 from anthropic import AsyncAnthropic
-from agent.schemas import AgentState, AgentAction, UserProfile
+from pydantic import ValidationError
+from agent.schemas import AgentState, AgentAction, ActionType, UserProfile
 
 logger = logging.getLogger("agent.claude")
 
@@ -604,6 +605,32 @@ def _profile_block(profile: Optional[UserProfile]) -> str:
     )
 
 
+def _parse_action(response, label: str) -> AgentAction:
+    """Turn Claude's tool_use block into an AgentAction, tolerating the
+    occasional malformed output the model produces. One bad generation must
+    never tear down the task.
+
+    In particular `expect` is optional and the model sometimes emits it as a
+    bare string — its tool-call XML syntax (e.g. '<parameter name=...>orders')
+    bleeding into the JSON value — which pydantic rejects. A wrong expectation
+    is never worth crashing over, so drop anything that isn't an object. Any
+    other unparseable output degrades to a graceful 'failed' the user hears,
+    instead of an unhandled 500 that closes the socket mid-task.
+    """
+    try:
+        tool_use = next(b for b in response.content if b.type == "tool_use")
+        raw = dict(tool_use.input)
+        if not isinstance(raw.get("expect"), dict):
+            raw.pop("expect", None)  # keep only a well-formed expectation object
+        return AgentAction(**raw)
+    except (ValidationError, StopIteration, TypeError, AttributeError) as e:
+        logger.warning("[%s] unusable model output — ending gracefully: %s", label, e)
+        return AgentAction(
+            type=ActionType.FAILED,
+            description="I'm having a little trouble with this page. Let's try that again.",
+        )
+
+
 async def stream_action(state: AgentState, rejection_note: str = None) -> AgentAction:
     dom_str = serialize_dom(state.context.dom_tree)
     _log_serialized_dom("decide", state.context.dom_tree, dom_str)
@@ -651,8 +678,7 @@ What is the next action?"""
         messages=[{"role": "user", "content": user_message}]
     )
 
-    tool_use = next(block for block in response.content if block.type == "tool_use")
-    return AgentAction(**tool_use.input)
+    return _parse_action(response, "decide")
 
 
 async def stream_recovery_action(state: AgentState) -> AgentAction:
@@ -698,5 +724,4 @@ Reconsider and choose a DIFFERENT next action."""
         messages=[{"role": "user", "content": user_message}]
     )
 
-    tool_use = next(block for block in response.content if block.type == "tool_use")
-    return AgentAction(**tool_use.input)
+    return _parse_action(response, "recover")
