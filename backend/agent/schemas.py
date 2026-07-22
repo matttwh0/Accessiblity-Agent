@@ -20,6 +20,7 @@ class ActionType(str, Enum):
     # terminal
     DONE = "done"
     FAILED = "failed"
+    ANSWER = "answer"   # chat reply for questions unrelated to navigation; text in "value"
 
 class DOMNode(BaseModel):
     tag: str

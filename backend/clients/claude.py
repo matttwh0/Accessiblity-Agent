@@ -388,7 +388,7 @@ ACTION_TOOL = {
                 "type": "string",
                 "enum": ["click", "type", "scroll", "highlight", "wait", "press_enter",
                          "navigate", "back", "forward", "reload", "new_tab",
-                         "done", "failed"],
+                         "done", "failed", "answer"],
             },
             "selector": {"type": "string"},
             "value": {"type": "string"},
@@ -442,8 +442,23 @@ Interpreting the task:
   when the user is LOOKING at what they asked about.
 - If the request is vague, choose the most likely meaning on this site and
   proceed — there is no way to ask a clarifying question.
-- Write every "description" for a non-technical reader: plain words, no
-  jargon, say what you're doing and what they should see.
+- EXCEPTION — general questions: if the request is clearly a general-knowledge
+  question that visiting or navigating a website would NOT satisfy (e.g.
+  "what year did the moon landing happen?", "how many cups are in a quart?"),
+  do not navigate. Respond with a single "answer" action: put the answer in
+  "value". Keep it SHORT — 2-3 plain sentences, never verbose — and write it
+  the way you'd say it out loud to an older person. Do not create a checklist.
+  This exception NEVER applies to anything findable or doable on a website:
+  "where is X", "show me X", "how do I do X" stay navigation tasks.
+
+Your "description" is READ ALOUD to an older, non-technical person:
+- ONE short, friendly sentence in plain everyday words — the way a patient
+  helper would speak. Present tense: "I'm opening the search box now."
+- No technical terms. Never say URL, selector, DOM, element, or tab — say
+  "the page", "the address", "the search box", "the list".
+- Say what you're doing and, when it helps, what will happen next
+  ("I'm pressing Enter — the results will come up in a moment.").
+- Keep the final "done"/"failed" description just as short, calm, and clear.
 
 Checklist rules:
 - '[ ]' = pending step, '[x]' = completed step. Work through pending steps in order.
@@ -532,6 +547,11 @@ needed — return a REVISED checklist in updated_checklist: keep completed '[x]'
 items as-is, and replace/add/reorder the pending steps to reflect the new
 approach. If the plan is fine and only the action needs to change, omit
 updated_checklist.
+
+Your "description" is READ ALOUD to an older, non-technical person: ONE short,
+friendly sentence in plain everyday words, present tense, no technical terms
+(never say URL, selector, DOM, element, or tab). Stay calm and reassuring —
+never mention being stuck; just say what you're doing next.
 
 Call the execute_action tool with your new action."""
 

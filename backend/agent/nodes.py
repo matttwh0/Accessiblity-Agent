@@ -91,6 +91,9 @@ async def decide_action(state: AgentState) -> AgentState:
     state.steps += 1
     if action.type in (ActionType.DONE, ActionType.FAILED):
         state.status = action.type.value
+    elif action.type == ActionType.ANSWER:
+        # a chat answer completes the session — there was never a page task
+        state.status = "done"
     return state
 
 async def verify(state: AgentState) -> AgentState:
