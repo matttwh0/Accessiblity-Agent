@@ -66,7 +66,40 @@
   }
   console.table(rows.map(classify))
 
+  // --- mirror content.js extractHiddenMenuItems(): which CLOSED-menu items
+  // would the agent now perceive? Paste on e.g. amazon.com and look for the
+  // account flyout's links ("Returns & Orders" era failures).
+  const HIDDEN_MENU_CAP = 40
+  const MENUISH_ROLE = /^(menu|menubar|listbox)$/
+  const MENUISH_NAME = /(menu|dropdown|drop-down|flyout|popover|submenu|popup)/i
+  const controlledIds = new Set()
+  document.querySelectorAll('[aria-haspopup][aria-controls], [aria-expanded][aria-controls], [aria-owns]').forEach(el => {
+    const refs = (el.getAttribute('aria-controls') || '') + ' ' + (el.getAttribute('aria-owns') || '')
+    refs.split(/\s+/).forEach(id => { if (id) controlledIds.add(id) })
+  })
+  const insideMenuContainer = (el) => {
+    let n = el.parentElement
+    for (let depth = 0; n && n !== document.body && depth < 8; n = n.parentElement, depth++) {
+      const role = n.getAttribute('role')
+      if (role && MENUISH_ROLE.test(role)) return true
+      if (n.id && controlledIds.has(n.id)) return true
+      if (MENUISH_NAME.test(n.id + ' ' + (n.getAttribute('class') || ''))) return true
+    }
+    return false
+  }
+  const hiddenItems = []
+  for (const el of document.querySelectorAll('a, button, [role="menuitem"], [role="option"]')) {
+    if (hiddenItems.length >= HIDDEN_MENU_CAP) break
+    if (extractedSet.has(el) || isVisible(el)) continue
+    const text = (el.textContent || '').trim().slice(0, 100)
+    if (!text && !el.ariaLabel && !el.title) continue
+    if (!insideMenuContainer(el)) continue
+    hiddenItems.push({ tag: el.tagName.toLowerCase(), text, container: (el.closest('[id]')?.id || '').slice(0, 40) })
+  }
+  console.log('%c=== hidden menu items the agent would perceive ===', 'font-weight:bold')
+  console.table(hiddenItems)
+
   // expose for poking around
-  window.__a11yProbe = { extracted, rows, classify }
-  return `extracted=${extracted.length} fileRows=${rows.length} — see table above; details in window.__a11yProbe`
+  window.__a11yProbe = { extracted, rows, classify, hiddenItems }
+  return `extracted=${extracted.length} fileRows=${rows.length} hiddenMenuItems=${hiddenItems.length} — see tables above; details in window.__a11yProbe`
 })()

@@ -27,8 +27,9 @@ logging.config.dictConfig({
 
 logger = logging.getLogger("agent.main")
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from pydantic import ValidationError
 import json
@@ -38,6 +39,7 @@ from agent.nodes import perceive, decide_action, verify, recover, hash_dom
 from agent.schemas import AgentState, PageContext, DOMNode, UserProfile
 from clients.assemblyai import proxy_transcription
 from clients.claude import reset_usage, usage_summary
+from clients.inworld import synthesize, TTSNotConfigured, TTSFailed
 
 load_dotenv()
 app = FastAPI()
@@ -178,7 +180,7 @@ async def agent_endpoint(ws: WebSocket):
                         last_action.type, state.status, state.steps, state.max_steps)
             await ws.send_json({
                 "type": "action",
-                "action": last_action.model_dump(exclude={"updated_checklist"}),
+                "action": last_action.model_dump(exclude={"updated_checklist", "search_hints"}),
                 "status": state.status,
                 "checklist": state.checklist
             })
@@ -199,6 +201,24 @@ async def agent_endpoint(ws: WebSocket):
         logger.exception("=== Unhandled error: %s ===", exc)
         raise
     
+# Narration synthesis for the extension. Non-2xx tells the extension to fall
+# back to chrome.tts, so a missing key or Inworld outage degrades the voice
+# quality instead of silencing the agent.
+@app.post("/tts")
+async def tts_endpoint(payload: dict):
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "no text to speak"}, status_code=400)
+    try:
+        audio = await synthesize(text)
+    except TTSNotConfigured as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+    except TTSFailed as exc:
+        logger.warning("TTS synthesis failed: %s", exc)
+        return JSONResponse({"error": str(exc)}, status_code=502)
+    return Response(content=audio, media_type="audio/mpeg")
+
+
 @app.post("/test")
 async def test_endpoint(payload: dict):
     state = AgentState(

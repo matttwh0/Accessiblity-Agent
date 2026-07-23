@@ -4,7 +4,7 @@ import logging
 import re
 import time
 from .schemas import AgentState, AgentAction, ActionType
-from clients.claude import stream_action, stream_recovery_action
+from clients.claude import stream_action, stream_recovery_action, node_signature
 
 logger = logging.getLogger("agent.nodes")
 
@@ -33,10 +33,26 @@ def hash_dom(dom_tree):
     return hashlib.md5(serialized.encode()).hexdigest()
 
 async def perceive(state: AgentState) -> AgentState:
+    # Nodes that are NEW since the last snapshot on the SAME page are exactly
+    # what the last action revealed (a hover-menu opening, a dropdown
+    # expanding) — the serializer ranks them first so a just-opened menu's
+    # items reach the model. A navigation (URL changed) or a wholesale redraw
+    # (most nodes new) is a new page, not a reveal — no boost then.
+    current_sigs = {node_signature(n) for n in state.context.dom_tree}
+    revealed = set()
+    if (state.previous_signatures is not None
+            and state.context.url == state.previous_url):
+        new = current_sigs - state.previous_signatures
+        if new and len(new) <= len(current_sigs) // 2:
+            revealed = new
+    state.revealed_signatures = revealed
+    state.previous_signatures = current_sigs
+
     state.previous_url = state.context.url
     state.previous_dom_hash = hash_dom(state.context.dom_tree)
-    logger.info("[PERCEIVE] step=%d  url=%s  dom_nodes=%d",
-                state.steps, state.context.url, len(state.context.dom_tree))
+    logger.info("[PERCEIVE] step=%d  url=%s  dom_nodes=%d  revealed=%d",
+                state.steps, state.context.url, len(state.context.dom_tree),
+                len(revealed))
     return state
 
 async def decide_action(state: AgentState) -> AgentState:
@@ -81,6 +97,12 @@ async def decide_action(state: AgentState) -> AgentState:
 
     logger.info("[TIMING] decide=%.2fs (incl %d done-gate retr%s)",
                 time.perf_counter() - t0, retries, "y" if retries == 1 else "ies")
+    if action.search_hints:
+        # the model's guesses at this site's vocabulary for the task — pinned
+        # into every future serialization so matching elements stay in view
+        state.search_hints = [h.strip() for h in action.search_hints
+                              if h and h.strip()][:8]
+        logger.info("[HINTS] %s", state.search_hints)
     # `type` is the only action carrying user-typed text — including saved-profile
     # PII — so its value must never be logged. Other actions' values are URLs/keys
     # and stay visible for debugging. (The recover-path log already omits value.)
@@ -146,10 +168,12 @@ async def verify(state: AgentState) -> AgentState:
         # stops the "scroll forever chasing a missing button" loop fast.
         # WAIT is included: if waiting produced no observable change, the page
         # wasn't loading anything — waiting again is pointless.
+        # HOVER is included: its whole purpose is to reveal menu items, so a
+        # hover that changed nothing revealed nothing — hovering again won't help.
         if last.type in (ActionType.CLICK, ActionType.TYPE, ActionType.NAVIGATE,
                          ActionType.PRESS_ENTER, ActionType.BACK, ActionType.FORWARD,
                          ActionType.RELOAD, ActionType.NEW_TAB, ActionType.SCROLL,
-                         ActionType.WAIT):
+                         ActionType.WAIT, ActionType.HOVER):
             if not page_changed:
                 is_stuck = True
 
@@ -187,6 +211,12 @@ async def recover(state: AgentState) -> AgentState:
     if action.updated_checklist:
         state.checklist = action.updated_checklist
         logger.info("[RECOVER] revised checklist:\n%s", state.checklist)
+    if action.search_hints:
+        # a revised plan implies the old vocabulary guesses were wrong —
+        # replace them with the new theory's terms
+        state.search_hints = [h.strip() for h in action.search_hints
+                              if h and h.strip()][:8]
+        logger.info("[RECOVER] revised search hints: %s", state.search_hints)
     state.actions_taken.append(action)
     state.steps += 1
     state.stuck_count = 0

@@ -379,7 +379,7 @@ function extractAccessibilityTree() {
     // element in this snapshot (a shrinking page could otherwise leave a stale
     // duplicate that querySelector would resolve to instead)
     document.querySelectorAll('[data-a11y-id]').forEach(el => el.removeAttribute('data-a11y-id'))
-    return [...document.querySelectorAll(selectors)]
+    const tree = [...document.querySelectorAll(selectors)]
         .filter(el => {
             const r = el.getBoundingClientRect()
             return r.width > 0 && r.height > 0
@@ -403,6 +403,89 @@ function extractAccessibilityTree() {
             }
             return node
         })
+    return tree.concat(extractHiddenMenuItems(tree.length))
+}
+
+// --- hidden menu items ----------------------------------------------------
+// Dropdown/hover menus keep their items in the DOM but invisible, so the
+// zero-size filter above drops them and the agent can never know they exist
+// (the Amazon "Returns & Orders" failure). This second pass surfaces items
+// inside CLOSED menus, marked visible:false — a hidden link still navigates on
+// el.click(), so the agent can usually act on them without opening the menu.
+// Scoped to menu-LIKE containers only (never every display:none element on the
+// page) and hard-capped so a huge mega-menu can't flood the token budget.
+const HIDDEN_MENU_CAP = 40
+
+// a container "is a menu" if ARIA says so, its id/class names say so, or a
+// visible trigger points at it via aria-controls/aria-owns
+const MENUISH_ROLE = /^(menu|menubar|listbox)$/
+const MENUISH_NAME = /(menu|dropdown|drop-down|flyout|popover|submenu|popup)/i
+
+function ariaControlledIds() {
+    const ids = new Set()
+    document.querySelectorAll('[aria-haspopup][aria-controls], [aria-expanded][aria-controls], [aria-owns]').forEach(el => {
+        const refs = (el.getAttribute('aria-controls') || '') + ' ' + (el.getAttribute('aria-owns') || '')
+        refs.split(/\s+/).forEach(id => { if (id) ids.add(id) })
+    })
+    return ids
+}
+
+function menuContainerOf(el, controlledIds) {
+    // walk a few ancestors looking for anything menu-shaped; the container
+    // element itself is the group identity for the round-robin below
+    let n = el.parentElement
+    for (let depth = 0; n && n !== document.body && depth < 8; n = n.parentElement, depth++) {
+        const role = n.getAttribute('role')
+        if (role && MENUISH_ROLE.test(role)) return n
+        if (n.id && controlledIds.has(n.id)) return n
+        const name = n.id + ' ' + (n.getAttribute('class') || '')
+        if (MENUISH_NAME.test(name)) return n
+    }
+    return null
+}
+
+function extractHiddenMenuItems(nextId) {
+    const controlledIds = ariaControlledIds()
+    // Collect candidates grouped by their menu container first, then fill the
+    // cap round-robin across containers. First-come order let one mega-menu
+    // (Amazon's "All" hamburger) exhaust every slot before other flyouts were
+    // reached — the account menu's Watchlist never made the tree. Now every
+    // menu gets its top items represented before any menu gets its tenth.
+    const groups = new Map()  // container element -> [{el, text, label}]
+    for (const el of document.querySelectorAll('a, button, [role="menuitem"], [role="option"]')) {
+        if (el.hasAttribute('data-a11y-id')) continue          // already in the visible pass
+        if (bubble.contains(el)) continue                       // never surface our own UI
+        const r = el.getBoundingClientRect()
+        if (r.width > 0 && r.height > 0) continue               // visible but unstamped (not our concern here)
+        const text = (el.textContent || '').trim().slice(0, 100)
+        const label = el.ariaLabel || el.title || null
+        if (!text && !label) continue                           // nothing the model could match on
+        const container = menuContainerOf(el, controlledIds)
+        if (!container) continue
+        if (!groups.has(container)) groups.set(container, [])
+        groups.get(container).push({ el, text, label })
+    }
+    const out = []
+    const queues = [...groups.values()]
+    for (let round = 0; out.length < HIDDEN_MENU_CAP && queues.some(q => round < q.length); round++) {
+        for (const q of queues) {
+            if (out.length >= HIDDEN_MENU_CAP) break
+            if (round >= q.length) continue
+            const { el, text, label } = q[round]
+            const id = nextId + out.length
+            el.setAttribute('data-a11y-id', String(id))
+            out.push({
+                tag: el.tagName.toLowerCase(),
+                text,
+                label,
+                role: el.getAttribute('role'),
+                selector: `[data-a11y-id="${id}"]`,
+                visible: false,   // serialized as "hidden":true for the model
+                value: null
+            })
+        }
+    }
+    return out
 }
 
 // Like extractAccessibilityTree(), but waits for the DOM to stop mutating
@@ -692,7 +775,7 @@ let lastTypedEl = null
 // Returns { success: true } or { success: false, error: '<why>' } — the error
 // is sent back to the backend so the agent KNOWS the action never happened.
 async function executeAction(action) {
-    const needsElement = ['click', 'type', 'highlight'].includes(action.type)
+    const needsElement = ['click', 'type', 'highlight', 'hover'].includes(action.type)
     let el = null
 
     if (needsElement) {
@@ -716,10 +799,16 @@ async function executeAction(action) {
         case 'click':
             // hover first: menus that open on :hover / mouseover never see a
             // bare programmatic click, so the agent could never open them
-            el.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
-            el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
-            el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }))
+            dispatchHover(el)
             el.click()
+            break
+        case 'hover':
+            // standalone hover: open a hover-menu so its items appear in the
+            // next snapshot. The settle wait + re-extract after this action is
+            // what actually captures whatever the hover revealed.
+            dispatchHover(el)
+            // well-built menus also open on keyboard focus — a free second chance
+            try { el.focus({ preventScroll: true }) } catch {}
             break
         case 'type': {
             const value = action.value ?? ''
@@ -796,6 +885,29 @@ async function executeAction(action) {
 
 function sleep(ms) {
     return new Promise(r => setTimeout(r, ms))
+}
+
+// Simulates the pointer entering an element the way a real mouse would: the
+// enter events fire on every ancestor too (mouseenter/pointerenter don't
+// bubble, and menus usually listen on a parent <li> or nav container, not the
+// link itself). Coordinates point at the element's center for handlers that
+// read them. Synthetic events can't trigger pure-CSS :hover rules — that gap
+// is covered by extracting hidden menu items instead.
+function dispatchHover(el) {
+    const r = el.getBoundingClientRect()
+    const at = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }
+    const chain = []
+    for (let n = el, depth = 0; n && n !== document.body && depth < 8; n = n.parentElement, depth++) {
+        chain.unshift(n)  // top-most ancestor first, like a mouse moving inward
+    }
+    for (const node of chain) {
+        node.dispatchEvent(new PointerEvent('pointerenter', { ...at, bubbles: false }))
+        node.dispatchEvent(new MouseEvent('mouseenter', { ...at, bubbles: false }))
+    }
+    el.dispatchEvent(new PointerEvent('pointerover', at))
+    el.dispatchEvent(new MouseEvent('mouseover', at))
+    el.dispatchEvent(new PointerEvent('pointermove', at))
+    el.dispatchEvent(new MouseEvent('mousemove', at))
 }
 
 // Keep the background service worker alive during long backend throttle pauses.

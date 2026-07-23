@@ -95,6 +95,41 @@ def test_search_with_no_match_changes_nothing():
     assert serialize_dom(rows, search_terms=["no such element"]) == serialize_dom(rows)
 
 
+# --- hidden menu items: extracted from closed dropdowns by the extension and
+# marked visible=False. They must reach the model flagged "hidden" (so it knows
+# they sit in a closed menu) without ever outranking visible controls.
+
+def _hidden_item(text, ident=0, tag="a"):
+    return DOMNode(tag=tag, text=text, visible=False,
+                   selector=f'[data-a11y-id="{ident}"]')
+
+
+def test_hidden_node_serializes_with_hidden_flag():
+    out = serialize_dom([_hidden_item("Returns & Orders", 0)])
+    assert '"hidden":true' in out
+
+
+def test_visible_node_carries_no_hidden_flag():
+    out = serialize_dom([_link("Your Orders", 0)])
+    assert "hidden" not in out
+
+
+def test_hidden_control_ranks_below_visible_control():
+    from clients.claude import _node_priority
+    visible = DOMNode(tag="button", text="Search", selector='[data-a11y-id="0"]')
+    hidden = DOMNode(tag="button", text="Sign Out", visible=False,
+                     selector='[data-a11y-id="1"]')
+    assert _node_priority(hidden) > _node_priority(visible)
+
+
+def test_hidden_menu_item_survives_serialization_of_busy_page():
+    # the Amazon case: a page full of visible rows must not crowd out the one
+    # hidden menu item the task needs
+    rows = [_row(f"row {i}", i) for i in range(1, 200)]
+    out = serialize_dom(rows + [_hidden_item("Returns & Orders", 500)])
+    assert "Returns & Orders" in out
+
+
 def _state_with(action):
     return AgentState(
         task="open the backend folder",

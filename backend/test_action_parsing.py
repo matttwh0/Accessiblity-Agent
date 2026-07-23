@@ -46,3 +46,9 @@ def test_no_tool_use_block_returns_graceful_failed():
     resp = SimpleNamespace(content=[SimpleNamespace(type="text", text="hi")])
     action = _parse_action(resp, "decide")
     assert action.type == ActionType.FAILED
+
+
+def test_hover_is_offered_in_the_tool_schema():
+    # the model can only emit actions the tool schema advertises
+    from clients.claude import ACTION_TOOL
+    assert "hover" in ACTION_TOOL["input_schema"]["properties"]["type"]["enum"]
