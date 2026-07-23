@@ -20,6 +20,7 @@ class ActionType(str, Enum):
     # terminal
     DONE = "done"
     FAILED = "failed"
+    ANSWER = "answer"   # chat reply for questions unrelated to navigation; text in "value"
 
 class DOMNode(BaseModel):
     tag: str
@@ -60,6 +61,19 @@ class AgentAction(BaseModel):
     # (decide) or the plan needs restructuring (recover)
     updated_checklist: Optional[str] = None
 
+class UserProfile(BaseModel):
+    """User-supplied info for filling forms. All fields optional; the extension
+    sends only non-empty ones. Never logged (see main.py / claude.py)."""
+    fullName: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    street: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip: Optional[str] = None
+    country: Optional[str] = None
+    notes: Optional[str] = None
+
 class PageContext(BaseModel):
     url: str
     title: str
@@ -68,6 +82,8 @@ class PageContext(BaseModel):
 class AgentState(BaseModel):
     task: str
     context: PageContext
+    # user-supplied info for autofill; None when the user has none or disabled it
+    profile: Optional[UserProfile] = None
     # markdown checklist string: "[ ] pending" / "[x] done", one item per line.
     # Updated when a step completes (decide) or the plan is revised (recover).
     checklist: str = ""

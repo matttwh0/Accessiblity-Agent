@@ -4,10 +4,12 @@ import os
 import re
 import time
 import json
+from typing import Optional
 from dotenv import load_dotenv
 import anthropic
 from anthropic import AsyncAnthropic
-from agent.schemas import AgentState, AgentAction
+from pydantic import ValidationError
+from agent.schemas import AgentState, AgentAction, ActionType, UserProfile
 
 logger = logging.getLogger("agent.claude")
 
@@ -387,7 +389,7 @@ ACTION_TOOL = {
                 "type": "string",
                 "enum": ["click", "type", "scroll", "highlight", "wait", "press_enter",
                          "navigate", "back", "forward", "reload", "new_tab",
-                         "done", "failed"],
+                         "done", "failed", "answer"],
             },
             "selector": {"type": "string"},
             "value": {"type": "string"},
@@ -441,8 +443,23 @@ Interpreting the task:
   when the user is LOOKING at what they asked about.
 - If the request is vague, choose the most likely meaning on this site and
   proceed — there is no way to ask a clarifying question.
-- Write every "description" for a non-technical reader: plain words, no
-  jargon, say what you're doing and what they should see.
+- EXCEPTION — general questions: if the request is clearly a general-knowledge
+  question that visiting or navigating a website would NOT satisfy (e.g.
+  "what year did the moon landing happen?", "how many cups are in a quart?"),
+  do not navigate. Respond with a single "answer" action: put the answer in
+  "value". Keep it SHORT — 2-3 plain sentences, never verbose — and write it
+  the way you'd say it out loud to an older person. Do not create a checklist.
+  This exception NEVER applies to anything findable or doable on a website:
+  "where is X", "show me X", "how do I do X" stay navigation tasks.
+
+Your "description" is READ ALOUD to an older, non-technical person:
+- ONE short, friendly sentence in plain everyday words — the way a patient
+  helper would speak. Present tense: "I'm opening the search box now."
+- No technical terms. Never say URL, selector, DOM, element, or tab — say
+  "the page", "the address", "the search box", "the list".
+- Say what you're doing and, when it helps, what will happen next
+  ("I'm pressing Enter — the results will come up in a moment.").
+- Keep the final "done"/"failed" description just as short, calm, and clear.
 
 Checklist rules:
 - '[ ]' = pending step, '[x]' = completed step. Work through pending steps in order.
@@ -532,6 +549,11 @@ items as-is, and replace/add/reorder the pending steps to reflect the new
 approach. If the plan is fine and only the action needs to change, omit
 updated_checklist.
 
+Your "description" is READ ALOUD to an older, non-technical person: ONE short,
+friendly sentence in plain everyday words, present tense, no technical terms
+(never say URL, selector, DOM, element, or tab). Stay calm and reassuring —
+never mention being stuck; just say what you're doing next.
+
 Call the execute_action tool with your new action."""
 
 
@@ -553,6 +575,60 @@ def _cached_system(text: str) -> list:
     model's minimum cacheable size — it just won't cache (cache_write=0).
     """
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
+def _profile_block(profile: Optional[UserProfile]) -> str:
+    """Format a UserProfile as a prompt block, omitting empty fields. Returns ""
+    when there is nothing to show, so callers can append unconditionally."""
+    if not profile:
+        return ""
+    fields = [
+        ("Full name", profile.fullName),
+        ("Email", profile.email),
+        ("Phone", profile.phone),
+        ("Street address", profile.street),
+        ("City", profile.city),
+        ("State/region", profile.state),
+        ("ZIP/postcode", profile.zip),
+        ("Country", profile.country),
+    ]
+    lines = [f"- {label}: {val.strip()}"
+             for label, val in fields if val and val.strip()]
+    if profile.notes and profile.notes.strip():
+        lines.append(f"- Notes: {profile.notes.strip()}")
+    if not lines:
+        return ""
+    return (
+        "\n\nUser's saved info — when a form field matches one of these, fill it "
+        "in with the `type` action. Never invent values you don't have here:\n"
+        + "\n".join(lines)
+    )
+
+
+def _parse_action(response, label: str) -> AgentAction:
+    """Turn Claude's tool_use block into an AgentAction, tolerating the
+    occasional malformed output the model produces. One bad generation must
+    never tear down the task.
+
+    In particular `expect` is optional and the model sometimes emits it as a
+    bare string — its tool-call XML syntax (e.g. '<parameter name=...>orders')
+    bleeding into the JSON value — which pydantic rejects. A wrong expectation
+    is never worth crashing over, so drop anything that isn't an object. Any
+    other unparseable output degrades to a graceful 'failed' the user hears,
+    instead of an unhandled 500 that closes the socket mid-task.
+    """
+    try:
+        tool_use = next(b for b in response.content if b.type == "tool_use")
+        raw = dict(tool_use.input)
+        if not isinstance(raw.get("expect"), dict):
+            raw.pop("expect", None)  # keep only a well-formed expectation object
+        return AgentAction(**raw)
+    except (ValidationError, StopIteration, TypeError, AttributeError) as e:
+        logger.warning("[%s] unusable model output — ending gracefully: %s", label, e)
+        return AgentAction(
+            type=ActionType.FAILED,
+            description="I'm having a little trouble with this page. Let's try that again.",
+        )
 
 
 async def stream_action(state: AgentState, rejection_note: str = None) -> AgentAction:
@@ -579,6 +655,7 @@ Accessibility tree:
 Previous actions: {json.dumps([a.model_dump(exclude={'updated_checklist'}, exclude_none=True) for a in state.actions_taken[-5:]], separators=(",", ":"))}
 
 What is the next action?"""
+    user_message += _profile_block(state.profile)
 
     if state.last_action_result:
         user_message += (
@@ -601,8 +678,7 @@ What is the next action?"""
         messages=[{"role": "user", "content": user_message}]
     )
 
-    tool_use = next(block for block in response.content if block.type == "tool_use")
-    return AgentAction(**tool_use.input)
+    return _parse_action(response, "decide")
 
 
 async def stream_recovery_action(state: AgentState) -> AgentAction:
@@ -636,6 +712,7 @@ Current accessibility tree:
 {dom_str}
 
 Reconsider and choose a DIFFERENT next action."""
+    user_message += _profile_block(state.profile)
 
     response = await _call_claude(
         "recover",
@@ -647,5 +724,4 @@ Reconsider and choose a DIFFERENT next action."""
         messages=[{"role": "user", "content": user_message}]
     )
 
-    tool_use = next(block for block in response.content if block.type == "tool_use")
-    return AgentAction(**tool_use.input)
+    return _parse_action(response, "recover")

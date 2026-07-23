@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<!-- The user's saved info. Stored in chrome.storage.local and sent to the
+     backend with each task so the agent can fill matching form fields. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Helper — My info</title>
+<style>
+  body {
+    font-family: -apple-system, sans-serif;
+    max-width: 480px;
+    margin: 32px auto;
+    padding: 0 20px;
+    color: #111827;
+  }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6b7280; font-size: 14px; margin-top: 0; }
+  label { display: block; margin: 14px 0 4px; font-size: 13px; font-weight: 600; }
+  input, textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 14px;
+    color: #111827;
+    background: #ffffff;
+  }
+  textarea { min-height: 70px; resize: vertical; }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  .toggle { display: flex; align-items: center; gap: 8px; margin: 20px 0; font-size: 14px; }
+  .toggle input { width: auto; }
+  .hint { color: #b45309; font-size: 12px; min-height: 14px; margin-top: 2px; }
+  #save {
+    margin-top: 16px;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    background: #3B82F6;
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #save:hover { background: #2563eb; }
+  #status { margin-left: 12px; color: #15803d; font-size: 14px; }
+</style>
+</head>
+<body>
+  <h1>My info</h1>
+  <p class="sub">Your helper uses this to fill out forms for you. Stored on this
+     computer and sent to your helper's backend only while it works on a task.</p>
+
+  <label for="fullName">Full name</label>
+  <input id="fullName" autocomplete="off">
+
+  <div class="row">
+    <div>
+      <label for="email">Email</label>
+      <input id="email" autocomplete="off">
+      <div class="hint" id="emailHint" aria-live="polite"></div>
+    </div>
+    <div>
+      <label for="phone">Phone</label>
+      <input id="phone" autocomplete="off">
+    </div>
+  </div>
+
+  <label for="street">Street address</label>
+  <input id="street" autocomplete="off">
+
+  <div class="row">
+    <div>
+      <label for="city">City</label>
+      <input id="city" autocomplete="off">
+    </div>
+    <div>
+      <label for="state">State/region</label>
+      <input id="state" autocomplete="off">
+    </div>
+  </div>
+
+  <div class="row">
+    <div>
+      <label for="zip">ZIP/postcode</label>
+      <input id="zip" autocomplete="off">
+    </div>
+    <div>
+      <label for="country">Country</label>
+      <input id="country" autocomplete="off">
+    </div>
+  </div>
+
+  <label for="notes">Notes (anything else your helper should know)</label>
+  <textarea id="notes"></textarea>
+
+  <div class="toggle">
+    <input type="checkbox" id="useProfile" checked>
+    <label for="useProfile" style="margin:0;font-weight:400;">Let my helper use this info</label>
+  </div>
+
+  <button id="save">Save</button>
+  <span id="status" aria-live="polite"></span>
+
+  <script src="options.js"></script>
+</body>
+</html>

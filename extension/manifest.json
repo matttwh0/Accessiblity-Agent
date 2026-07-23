@@ -3,15 +3,11 @@
   "name": "Accessibility Agent",
   "version": "0.1.0",
   "description": "Voice-driven web navigation agent for non-technical users",
-  "permissions": ["activeTab", "scripting", "storage", "tabs", "offscreen"],
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "offscreen", "tts"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
-  "web_accessible_resources": [{
-    "resources": ["wake.html"],
-    "matches": ["<all_urls>"]
-  }],
   "content_scripts": [{
     "matches": ["<all_urls>"],
     "js": ["content.js"],
@@ -20,5 +16,6 @@
   }],
   "action": {
     "default_icon": "icons/icon128.png"
-  }
+  },
+  "options_page": "options.html"
 }

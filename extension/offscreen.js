@@ -4,8 +4,8 @@
 // one-time mic grant (that's the documented USER_MEDIA offscreen pattern).
 // NOTE: wake-word listening does NOT live here — Chrome refuses to run
 // SpeechRecognition in offscreen documents regardless of permission, so the
-// wake listener lives in an extension iframe per tab (wake.js), elected by
-// the background so only the active tab's frame listens.
+// wake listener lives in the pinned Voice Hub tab (voice.html/voice.js),
+// the one context where both mic APIs answer to the extension alone.
 
 let dictation = null  // { ws, ctx, stream, source, node } while recording
 
@@ -30,10 +30,21 @@ async function startDictation() {
     }
 
     const ws = new WebSocket('ws://localhost:8000/transcribe')
+    // audio captured while the socket is still connecting — flushed on open so
+    // the user's first words aren't dropped during the connection handshake
+    let preOpenQueue = []
+    ws.onopen = () => {
+        for (const b of preOpenQueue) ws.send(b)
+        preOpenQueue = null
+    }
     ws.onmessage = (e) => {
         let m
         try { m = JSON.parse(e.data) } catch { return }
         if (m.type === 'transcript') {
+            if (dictation && dictation.noSpeechTimer) {
+                clearTimeout(dictation.noSpeechTimer)
+                dictation.noSpeechTimer = null
+            }
             send('dictation_transcript', { text: m.text, is_final: m.is_final })
         } else if (m.type === 'transcribe_error') {
             send('dictation_error', { error: m.error })
@@ -67,18 +78,28 @@ async function startDictation() {
             for (const c of pending) { all.set(c, off); off += c.length }
             pending = []; pendingSamples = 0
             if (ws.readyState === WebSocket.OPEN) ws.send(all.buffer)
+            else if (ws.readyState === WebSocket.CONNECTING && preOpenQueue) preOpenQueue.push(all.buffer)
         }
     }
     source.connect(node)
     node.connect(ctx.destination)  // worklet emits no output samples — silent
 
-    dictation = { ws, ctx, stream, source, node }
+    // Without this, an unheard command leaves the mic recording forever with
+    // no feedback — the exact "it isn't listening to me" dead end. If the
+    // service produces no transcript at all in 12s, say so and reset.
+    const noSpeechTimer = setTimeout(() => {
+        send('dictation_error', { error: 'I didn\'t catch anything — say "Hey Helper" and then your request' })
+        stopDictation()
+    }, 12000)
+
+    dictation = { ws, ctx, stream, source, node, noSpeechTimer }
     send('dictation_started')
 }
 
 function stopDictation() {
     if (!dictation) return
-    const { ws, ctx, stream, source, node } = dictation
+    const { ws, ctx, stream, source, node, noSpeechTimer } = dictation
+    if (noSpeechTimer) clearTimeout(noSpeechTimer)
     dictation = null
     try { node.disconnect() } catch {}
     try { source.disconnect() } catch {}
