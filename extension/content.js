@@ -5,7 +5,7 @@ document.getElementById('a11y-agent-bubble')?.remove()
 const bubble = document.createElement('div')
 bubble.id = 'a11y-agent-bubble'
 bubble.innerHTML = `
-  <div id="a11y-agent-icon">🤖</div>
+  <img id="a11y-agent-icon" src="${chrome.runtime.getURL('icons/icon128.png')}" alt="" draggable="false" />
   <div id="a11y-agent-panel" style="display:none">
     <div id="a11y-agent-input-row">
       <input id="a11y-agent-input" placeholder="What do you need help with?" />
@@ -394,7 +394,8 @@ function extractAccessibilityTree() {
                 selector: `[data-a11y-id="${i}"]`,
                 visible: true,
                 // current input value so the backend can see typing took effect
-                value: typeof el.value === 'string' ? el.value.slice(0, 100) : null
+                // (never passwords — those must not leave the page)
+                value: (typeof el.value === 'string' && el.type !== 'password') ? el.value.slice(0, 100) : null
             }
             // a <select>'s dropdown is browser UI the agent can never see or
             // click — surface its choices so the agent can pick one by "type"
