@@ -351,7 +351,7 @@ chrome.tabs.onCreated.addListener((tab) => {
 function startTask(tabId, msg) {
     endSession(tabId) // a new task replaces any previous one in this tab
 
-    const ws = new WebSocket('ws://localhost:8000/agent')
+    const ws = new WebSocket('wss://accessiblity-agent-production.up.railway.app/agent')
     const session = { ws, state: 'waiting_backend', pendingAction: null, pendingExpect: null, lastUpdate: null, navFallback: null }
     sessions.set(tabId, session)
 

@@ -49,7 +49,7 @@ async function speak(text) {
     const ctrl = new AbortController()
     speakAbort = ctrl
     try {
-        const resp = await fetch('http://localhost:8000/tts', {
+        const resp = await fetch('https://accessiblity-agent-production.up.railway.app/tts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text }),
@@ -84,7 +84,7 @@ async function startDictation() {
         return
     }
 
-    const ws = new WebSocket('ws://localhost:8000/transcribe')
+    const ws = new WebSocket('wss://accessiblity-agent-production.up.railway.app/transcribe')
     // audio captured while the socket is still connecting — flushed on open so
     // the user's first words aren't dropped during the connection handshake
     let preOpenQueue = []
