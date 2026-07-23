@@ -11,6 +11,7 @@ class ActionType(str, Enum):
     HIGHLIGHT = "highlight"
     WAIT = "wait"
     PRESS_ENTER = "press_enter"   # submit like a real user
+    HOVER = "hover"               # open hover-menus (dropdowns that never see a click)
     # browser actions (executed by the background worker via chrome.tabs)
     NAVIGATE = "navigate"
     BACK = "back"
@@ -60,6 +61,11 @@ class AgentAction(BaseModel):
     # full checklist string, returned only when a step was just completed
     # (decide) or the plan needs restructuring (recover)
     updated_checklist: Optional[str] = None
+    # the model's guesses at THIS site's vocabulary for the task ("orders",
+    # "order history" for "what did I buy") — returned on the first turn or
+    # with a revised plan; matching page elements are pinned into every
+    # serialized snapshot so they can't be truncated out
+    search_hints: Optional[list[str]] = None
 
 class UserProfile(BaseModel):
     """User-supplied info for filling forms. All fields optional; the extension
@@ -110,3 +116,14 @@ class AgentState(BaseModel):
     max_recovery_attempts: int = 2
     previous_url: Optional[str] = None
     previous_dom_hash: Optional[str] = None
+
+    # smart search: the model's site-vocabulary hints for this task (set from
+    # the first action's search_hints, refreshed by recovery) — pinned into
+    # every DOM serialization alongside literal task words
+    search_hints: list[str] = []
+    # per-node signatures of the previous snapshot, and the subset of current
+    # nodes that are new on the SAME page (what the last action revealed) —
+    # those get top serialization priority so a just-opened menu is never
+    # truncated out
+    previous_signatures: Optional[set[str]] = None
+    revealed_signatures: set[str] = set()

@@ -80,6 +80,26 @@ def test_browser_action_with_unchanged_page_counts_stuck():
     assert state.stuck_count == 1
 
 
+# --- hover: a page action that reveals dropdown menu items ---
+
+def test_hover_action_type_exists():
+    action = AgentAction(type="hover", selector="#menu", description="hover the menu")
+    assert action.type == ActionType.HOVER
+
+
+def test_hover_with_unchanged_page_counts_stuck():
+    # a hover that revealed nothing is as dead as a click that did nothing
+    state = make_state(last_action_result=None)
+    state.actions_taken = [
+        click(),
+        AgentAction(type=ActionType.HOVER, selector="#menu", description="hover"),
+    ]
+    state.previous_url = state.context.url
+    state.previous_dom_hash = hash_dom(state.context.dom_tree)  # unchanged
+    state = asyncio.run(verify(state))
+    assert state.stuck_count == 1
+
+
 # --- DOM hash must see input values, so typing registers as a page change ---
 
 def test_hash_dom_differs_when_only_input_value_changes():

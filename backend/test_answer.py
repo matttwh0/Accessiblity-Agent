@@ -67,6 +67,13 @@ def test_system_prompt_has_answer_rule():
     assert "verbose" in SYSTEM_PROMPT
 
 
+def test_final_text_is_one_sentence():
+    # answers and final done/failed descriptions are spoken in full, so the
+    # prompt must cap both at a single sentence
+    assert "ONE plain sentence" in SYSTEM_PROMPT
+    assert "ONE short, calm sentence" in SYSTEM_PROMPT
+
+
 def test_prompts_have_spoken_language_guidance():
     # descriptions are read ALOUD to an older listener — both prompts must say so
     for prompt in (SYSTEM_PROMPT, RECOVERY_PROMPT):

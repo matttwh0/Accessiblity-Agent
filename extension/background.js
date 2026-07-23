@@ -57,8 +57,8 @@ async function ensureOffscreen() {
     if (!creatingOffscreen) {
         creatingOffscreen = chrome.offscreen.createDocument({
             url: 'offscreen.html',
-            reasons: ['USER_MEDIA'],
-            justification: 'Microphone for voice commands and the "hey helper" wake phrase',
+            reasons: ['USER_MEDIA', 'AUDIO_PLAYBACK'],
+            justification: 'Microphone for voice commands and playback of spoken narration',
         }).finally(() => { creatingOffscreen = null })
     }
     await creatingOffscreen
@@ -173,21 +173,36 @@ async function ensureContentScript(tabId) {
 // --- spoken narration ------------------------------------------------------
 // The agent TALKS the user through each step (the audience is older and
 // non-technical; the prompt writes descriptions to be heard, not read).
-// chrome.tts is Chrome's built-in engine — free, offline, no keys — behind
-// this one helper so a neural-voice service could be swapped in later.
-// Gated by the 🔊 toggle (speechEnabled, default ON). Each utterance
-// interrupts the previous one so speech never lags behind the page.
+// The voice is Inworld.ai neural TTS, proxied through the backend (/tts) so
+// the API key never ships in the extension. Service workers can't play audio,
+// so the offscreen document fetches and plays each utterance; if the backend
+// or Inworld is down it reports back and we fall back to chrome.tts, keeping
+// the agent audible either way. Gated by the 🔊 toggle (speechEnabled,
+// default ON). Each utterance interrupts the previous one so speech never
+// lags behind the page.
 async function speak(text) {
     if (!text) return
     let enabled = true
     try { enabled = (await chrome.storage.local.get('speechEnabled')).speechEnabled !== false } catch {}
     if (!enabled) return
-    try { chrome.tts.speak(text, { rate: 0.9, enqueue: false }) } catch {}
+    try {
+        await ensureOffscreen()
+        sendToOffscreen({ type: 'offscreen_speak', text })
+    } catch {
+        try { chrome.tts.speak(text, { rate: 0.9, enqueue: false }) } catch {}
+    }
+}
+
+// Cut off whatever is being said right now — both the neural voice in the
+// offscreen document and any chrome.tts fallback utterance.
+function stopSpeech() {
+    sendToOffscreen({ type: 'offscreen_speak_stop' })
+    try { chrome.tts.stop() } catch {}
 }
 
 async function startDictationForTab(tabId) {
     // never talk over (or into) the microphone the user is about to speak into
-    try { chrome.tts.stop() } catch {}
+    stopSpeech()
     dictationTabId = tabId ?? (await activeTabId())
     if (!(await ensureContentScript(dictationTabId))) {
         const hub = await findVoiceHub()
@@ -230,8 +245,16 @@ async function onExtensionPageMessage(msg, sender) {
         if (msg.is_final) sendToOffscreen({ type: 'offscreen_dictate_stop' })
     } else if (msg.type === 'dictation_error') {
         notify(await dictationTarget(), { type: 'voice_error', error: msg.error })
+    } else if (msg.type === 'tts_fallback') {
+        // the offscreen doc couldn't get neural audio (backend down, Inworld
+        // error) — say it with Chrome's built-in voice so nothing goes unsaid.
+        // speak() already checked the 🔊 toggle before sending the text over.
+        try { chrome.tts.speak(msg.text, { rate: 0.9, enqueue: false }) } catch {}
     } else if (msg.type === 'stop_phrase_heard') {
-        // "thank you helper": stop the active tab's task (or any running task)
+        // "thanks helper": first, quiet whatever is being read out — this also
+        // works after a task ended, while its final summary is still playing
+        stopSpeech()
+        // then stop the active tab's task (or any running task)
         const tabId = await activeTabId()
         if (tabId != null && sessions.has(tabId)) {
             stopTask(tabId)
@@ -301,6 +324,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 // next send/receive — at most one in-flight LLM call completes, nothing new starts.
 function stopTask(tabId) {
     if (!sessions.has(tabId)) return
+    stopSpeech()  // standing down includes going quiet
     endSession(tabId)
     notify(tabId, { type: 'agent_update', description: 'Stopped.', ended: true })
 }

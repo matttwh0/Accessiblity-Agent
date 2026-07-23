@@ -66,6 +66,9 @@ def _compact_node(n) -> str:
         node["value"] = n.value[:_TEXT_CAP]
     if n.options:
         node["options"] = [o[:_TEXT_CAP] for o in n.options[:20]]
+    if not n.visible:
+        # item inside a closed dropdown/menu — clickable, just not on screen
+        node["hidden"] = True
     return json.dumps(node, separators=(",", ":"))
 
 
@@ -96,17 +99,92 @@ def _node_priority(n) -> int:
     tag = n.tag
     role = (n.role or "").lower()
     label = (n.label or "").lower()
+    base = 4
     if tag in ("input", "textarea", "select") or role in ("searchbox", "search", "textbox", "combobox"):
-        return 0  # the agent's levers — search/filter inputs always survive
-    if "search" in label:
-        return 0
-    if tag == "button" or role in ("button", "tab", "menuitem", "checkbox", "radio", "switch"):
-        return 1
-    if tag in ("h1", "h2", "h3", "label") or role == "heading":
-        return 2
-    if tag == "a" or role == "link":
-        return 3
-    return 4
+        base = 0  # the agent's levers — search/filter inputs always survive
+    elif "search" in label:
+        base = 0
+    elif tag == "button" or role in ("button", "tab", "menuitem", "checkbox", "radio", "switch"):
+        base = 1
+    elif tag in ("h1", "h2", "h3", "label") or role == "heading":
+        base = 2
+    elif tag == "a" or role == "link":
+        base = 3
+    # closed-menu items are useful context but must never crowd out the
+    # controls the user can actually see
+    if not n.visible:
+        base = max(base, 3) + 1
+    return base
+
+
+def node_signature(n) -> str:
+    """Identity of a node across snapshots. Selectors are opaque per-snapshot
+    ids, so identity lives in the descriptive fields; visibility is included so
+    a hidden menu item flipping visible (its menu opened) counts as new."""
+    return "|".join((
+        n.tag,
+        (n.text or "").strip()[:_TEXT_CAP],
+        (n.label or "")[:_TEXT_CAP],
+        n.role or "",
+        "1" if n.visible else "0",
+    ))
+
+
+# Words that carry no target identity: articles/pronouns/question words, plus
+# the generic action and web nouns nearly every task contains. What's left in
+# a task like "how do i check what i bought in the past" is the payload:
+# "bought", "past".
+_STOPWORDS = frozenset("""
+a an the and or but of to in on at for with from by as my me i you your we our
+us is are was were be been am do does did done can could would should will
+how what where when which who whose why it its this that these those there
+then than please help helper want wants need needs like get got give go goes
+going gone come back find found show shows shown open opens click clicks
+press check checks look looks looking see seen take takes make makes made
+page pages website websites site sites web link links button buttons menu
+menus tab tabs bar into onto about not no yes so just some any all each if
+have has had they them he she his her hers theirs something anything thing
+things stuff way ways out over under again more most very really
+""".split())
+
+
+def mine_task_terms(task: str, checklist: str = "") -> list[str]:
+    """Literal fallback search terms: content words from the task and the first
+    pending checklist item. Deterministic and free — the model's search_hints
+    cover the vocabulary gap ("bought" vs "Orders"); these cover the case where
+    the user already used the site's own word ("find watchlist")."""
+    source = task
+    for line in (checklist or "").splitlines():
+        s = line.strip()
+        if s.startswith("[ ]"):
+            source += " " + s[3:]
+            break  # only the step being worked on names the current target
+    out, seen = [], set()
+    for w in re.findall(r"[a-z0-9']+", source.lower()):
+        if len(w) < 3 or w in _STOPWORDS or w in seen:
+            continue
+        seen.add(w)
+        out.append(w)
+    return out[:10]
+
+
+# A term matching more nodes than this identifies nothing on this page (e.g.
+# "amazon" on amazon.com) and is dropped for the snapshot; the total pin cap
+# keeps pinning — which is exempt from the char budget — from blowing it.
+PIN_TERM_MAX_MATCHES = int(os.getenv("PIN_TERM_MAX_MATCHES", "15"))
+PIN_TOTAL_CAP = int(os.getenv("PIN_TOTAL_CAP", "30"))
+
+
+def pinned_indices(dom_tree, terms) -> set:
+    """Guarded find-in-page: indices to pin for `terms`, dropping any term too
+    common to be discriminative and capping the total (document order)."""
+    out = set()
+    for t in terms or []:
+        matches = find_matching_indices(dom_tree, [t])
+        if not matches or len(matches) > PIN_TERM_MAX_MATCHES:
+            continue
+        out |= matches
+    return set(sorted(out)[:PIN_TOTAL_CAP])
 
 
 def find_matching_indices(dom_tree, terms) -> set:
@@ -166,7 +244,7 @@ def _search_terms_from_state(state) -> list:
 
 
 def serialize_dom(dom_tree, max_nodes: int = None, char_budget: int = None,
-                  search_terms=None) -> str:
+                  search_terms=None, boost_signatures=None) -> str:
     """Compact the accessibility tree to the top-k elements under a token cap.
 
     Three stages:
@@ -185,14 +263,20 @@ def serialize_dom(dom_tree, max_nodes: int = None, char_budget: int = None,
 
     search_terms is targeted find-in-page: every node matching a term is pinned
     into the output regardless of the group cap or budget, so the element the
-    agent is hunting for is surfaced wherever it lives in the tree.
+    agent is hunting for is surfaced wherever it lives in the tree. Terms too
+    common to identify anything on this page are dropped (see pinned_indices).
+
+    boost_signatures are node signatures that rank FIRST among the non-pinned
+    nodes (above inputs) — used for nodes the last action just revealed, e.g.
+    a hover-menu's items — but still count against the normal budgets, so a
+    huge reveal degrades gracefully instead of blowing the token cap.
     """
     max_nodes = max_nodes or MAX_DOM_NODES
     char_budget = char_budget or _DOM_CHAR_BUDGET
 
     # Pinned matches jump the queue: they're admitted first and exempt from the
     # group cap and char budget, so a searched-for element can't be crowded out.
-    pinned = find_matching_indices(dom_tree, search_terms)
+    pinned = pinned_indices(dom_tree, search_terms)
     chosen: dict[int, str] = {}
     chars = 0
     for i in pinned:
@@ -211,7 +295,9 @@ def serialize_dom(dom_tree, max_nodes: int = None, char_budget: int = None,
         if seen < MAX_GROUP_NODES:
             survivors.append((i, n))
 
-    ranked = sorted(survivors, key=lambda t: (_node_priority(t[1]), t[0]))
+    boost = boost_signatures or set()
+    ranked = sorted(survivors, key=lambda t: (
+        -1 if node_signature(t[1]) in boost else _node_priority(t[1]), t[0]))
     for i, n in ranked:
         if len(chosen) >= max_nodes:
             break
@@ -388,7 +474,7 @@ ACTION_TOOL = {
             "type": {
                 "type": "string",
                 "enum": ["click", "type", "scroll", "highlight", "wait", "press_enter",
-                         "navigate", "back", "forward", "reload", "new_tab",
+                         "hover", "navigate", "back", "forward", "reload", "new_tab",
                          "done", "failed", "answer"],
             },
             "selector": {"type": "string"},
@@ -423,6 +509,19 @@ ACTION_TOOL = {
                     "no checklist exists yet, return the NEW checklist you created here."
                 ),
             },
+            "search_hints": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "FIRST TURN only (or when returning a revised plan after being "
+                    "stuck): 5-8 short words or phrases likely to label THIS site's "
+                    "buttons, links, or menus for this task — the site's own "
+                    "vocabulary, not the user's. User says 'what I bought' -> hints "
+                    "like 'orders', 'order history', 'purchases', 'returns'. Page "
+                    "elements matching a hint are guaranteed to stay visible to you "
+                    "on crowded pages. Omit on later turns."
+                ),
+            },
         },
         "required": ["type", "description"]
     }
@@ -443,12 +542,20 @@ Interpreting the task:
   when the user is LOOKING at what they asked about.
 - If the request is vague, choose the most likely meaning on this site and
   proceed — there is no way to ask a clarifying question.
+- The user's words are their INTENT, not the site's vocabulary. They often
+  use the wrong name for a thing: "returns" when the site says "Your Orders",
+  "movies" when it says "Prime Video", "my page" when it says "Profile".
+  Match what they MEAN against the labels actually present in the tree, and
+  prefer the site's own wording when typing into a search box. If searching
+  their literal word found nothing, search once more with the site's own term
+  or a broader one — never fail just because their exact word isn't on the page.
 - EXCEPTION — general questions: if the request is clearly a general-knowledge
   question that visiting or navigating a website would NOT satisfy (e.g.
   "what year did the moon landing happen?", "how many cups are in a quart?"),
   do not navigate. Respond with a single "answer" action: put the answer in
-  "value". Keep it SHORT — 2-3 plain sentences, never verbose — and write it
-  the way you'd say it out loud to an older person. Do not create a checklist.
+  "value". Keep it to ONE plain sentence, never verbose — it is read aloud in
+  full, so write it the way you'd say it out loud to an older person. Do not
+  create a checklist.
   This exception NEVER applies to anything findable or doable on a website:
   "where is X", "show me X", "how do I do X" stay navigation tasks.
 
@@ -459,7 +566,8 @@ Your "description" is READ ALOUD to an older, non-technical person:
   "the page", "the address", "the search box", "the list".
 - Say what you're doing and, when it helps, what will happen next
   ("I'm pressing Enter — the results will come up in a moment.").
-- Keep the final "done"/"failed" description just as short, calm, and clear.
+- The final "done"/"failed" description is read aloud in full: it must be
+  exactly ONE short, calm sentence — never a recap of everything you did.
 
 Checklist rules:
 - '[ ]' = pending step, '[x]' = completed step. Work through pending steps in order.
@@ -477,20 +585,36 @@ Checklist rules:
 - After the first turn, do NOT restructure the checklist (no adding/removing/
   rewording items) — only flip boxes.
 
+Search hints (first turn, in search_hints):
+- With your first action, also return 5-8 short words or phrases likely to
+  label the controls this task needs on THIS site — the site's own vocabulary,
+  not the user's ("what did I buy" -> "orders", "order history", "purchases",
+  "returns"). Include likely synonyms. Elements matching a hint stay visible
+  to you even on crowded pages, so good hints keep your target in view.
+
 Your capabilities (everything a regular user can do):
 - Page actions (need a selector from the accessibility tree): "click", "type"
   (text in "value"), "press_enter" (press Enter in the input you just typed
   in — the normal way to submit a search; ALWAYS include that input's
-  selector, do not rely on focus), "scroll", "highlight", "wait".
+  selector, do not rely on focus), "hover" (open a hover-menu so its items
+  appear in the next tree), "scroll", "highlight", "wait".
 - Browser actions (no selector — the browser executes them for you):
   "navigate" (full URL in "value"), "back", "forward", "reload",
   "new_tab" (full URL in "value"; the task continues in the new tab).
 
-Dropdowns:
+Dropdowns and menus:
 - A <select> element lists its choices in "options". NEVER click a select —
   its dropdown is browser UI you cannot see or operate. Instead use "type"
   with the chosen option's exact text from "options" as the "value".
-- Custom dropdown menus (nav menus, comboboxes): clicking them reveals their
+- Elements marked "hidden":true sit inside a CLOSED dropdown/hover menu.
+  You can "click" them DIRECTLY — the click works even though the item is not
+  on screen. Prefer that over opening the menu first; it is one step instead
+  of two.
+- If a nav item looks like it hides a menu but no matching "hidden" items are
+  in the tree, "hover" it: the menu opens and its items appear in the next
+  tree. Then click the revealed item. Never click a hover-trigger expecting
+  to navigate — hover it instead.
+- Custom dropdown menus (comboboxes): clicking them reveals their
   items in the NEXT accessibility tree. Click to open, then on the next turn
   click the revealed item. If a click changed the page but not how you
   predicted, check the new tree for revealed menu items before retrying.
@@ -537,6 +661,12 @@ Common reasons for getting stuck and what to try instead:
 - Clicking a nav item that opens a dropdown (DOM changes, URL doesn't): the
   sub-menu items are now visible in the tree — click one, OR pivot to a
   different nav section that better matches the task.
+- The thing you need is in a hover-menu: items marked "hidden":true can be
+  clicked directly without opening their menu. If they're not in the tree,
+  "hover" the menu trigger — its items appear in the next tree.
+- You searched or hunted for the USER'S literal word but this site names it
+  differently ("returns" vs "Your Orders"). Re-read the tree for the site's
+  own label that matches their intent and use that instead.
 - Waiting after a dropdown opened: the page is already settled. Read the
   visible sub-items and act on them or pivot.
 - "Testing" navigation on DMV-style sites is for knowledge/written tests, NOT
@@ -547,7 +677,9 @@ itself is wrong — a step is impossible on this site, or a different path is
 needed — return a REVISED checklist in updated_checklist: keep completed '[x]'
 items as-is, and replace/add/reorder the pending steps to reflect the new
 approach. If the plan is fine and only the action needs to change, omit
-updated_checklist.
+updated_checklist. When you DO revise the plan, also return fresh
+search_hints — 5-8 words or phrases the elements you now need would use on
+this site (your earlier guesses were probably wrong).
 
 Your "description" is READ ALOUD to an older, non-technical person: ONE short,
 friendly sentence in plain everyday words, present tense, no technical terms
@@ -632,8 +764,15 @@ def _parse_action(response, label: str) -> AgentAction:
 
 
 async def stream_action(state: AgentState, rejection_note: str = None) -> AgentAction:
-    dom_str = serialize_dom(state.context.dom_tree)
-    _log_serialized_dom("decide", state.context.dom_tree, dom_str)
+    # smart search: the model's site-vocabulary hints plus literal task words
+    # pin matching elements into the snapshot; nodes the last action just
+    # revealed (an opened menu) rank first
+    terms = list(state.search_hints) + mine_task_terms(state.task, state.checklist)
+    dom_str = serialize_dom(state.context.dom_tree, search_terms=terms,
+                            boost_signatures=state.revealed_signatures)
+    _log_serialized_dom(f"decide (terms={terms or '-'}, "
+                        f"revealed={len(state.revealed_signatures)})",
+                        state.context.dom_tree, dom_str)
     # first turn: planning is merged into this call — one LLM round trip
     # returns both the checklist (via updated_checklist) and the first action
     first_turn = not state.checklist.strip()
@@ -652,7 +791,7 @@ Page title: {state.context.title}
 Accessibility tree:
 {dom_str}
 
-Previous actions: {json.dumps([a.model_dump(exclude={'updated_checklist'}, exclude_none=True) for a in state.actions_taken[-5:]], separators=(",", ":"))}
+Previous actions: {json.dumps([a.model_dump(exclude={'updated_checklist', 'search_hints'}, exclude_none=True) for a in state.actions_taken[-5:]], separators=(",", ":"))}
 
 What is the next action?"""
     user_message += _profile_block(state.profile)
@@ -685,10 +824,13 @@ async def stream_recovery_action(state: AgentState) -> AgentAction:
     # widen the serialization budget on each recovery attempt so an element
     # that was truncated out of the default view gets another chance to appear
     max_nodes, char_budget = recovery_budget(state.recovery_attempts)
-    # find-in-page: pin whatever the agent was hunting for (e.g. the "backend"
-    # link a failed click named in its selector) so a target the group cap or
-    # budget had dropped is surfaced wherever it lives in the tree.
-    search_terms = _search_terms_from_state(state)
+    # find-in-page: pin whatever the agent was hunting for — its site-vocabulary
+    # hints, literal task words, and anything its recent actions named (e.g. the
+    # "backend" link a failed click named in its selector) — so a target the
+    # group cap or budget had dropped is surfaced wherever it lives in the tree.
+    search_terms = (list(state.search_hints)
+                    + mine_task_terms(state.task, state.checklist)
+                    + _search_terms_from_state(state))
     dom_str = serialize_dom(state.context.dom_tree, max_nodes, char_budget,
                             search_terms=search_terms)
     _log_serialized_dom(f"recover (attempt {state.recovery_attempts}, "
@@ -704,7 +846,7 @@ Current URL: {state.context.url}
 Page title: {state.context.title}
 
 YOU ARE STUCK. Here's what you've tried (last 6 actions):
-{json.dumps([a.model_dump(exclude={'updated_checklist'}, exclude_none=True) for a in state.actions_taken[-6:]], separators=(",", ":"))}
+{json.dumps([a.model_dump(exclude={'updated_checklist', 'search_hints'}, exclude_none=True) for a in state.actions_taken[-6:]], separators=(",", ":"))}
 
 {f"Your most recent action FAILED to execute: {state.last_action_result}. It never reached the page." if state.last_action_result else ""}
 
