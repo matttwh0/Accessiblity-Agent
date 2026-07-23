@@ -1,7 +1,10 @@
-// Runs inside the extension's offscreen document. One job: command
-// dictation — getUserMedia -> 16kHz PCM (AudioWorklet) -> the backend's
-// /transcribe WebSocket. getUserMedia works here with the extension's
-// one-time mic grant (that's the documented USER_MEDIA offscreen pattern).
+// Runs inside the extension's offscreen document. Two jobs:
+// 1. Command dictation — getUserMedia -> 16kHz PCM (AudioWorklet) -> the
+//    backend's /transcribe WebSocket. getUserMedia works here with the
+//    extension's one-time mic grant (the documented USER_MEDIA pattern).
+// 2. Spoken narration — fetch each utterance's audio from the backend's
+//    /tts proxy (Inworld.ai neural TTS) and play it; service workers can't
+//    play audio, so this document is where the agent's voice lives.
 // NOTE: wake-word listening does NOT live here — Chrome refuses to run
 // SpeechRecognition in offscreen documents regardless of permission, so the
 // wake listener lives in the pinned Voice Hub tab (voice.html/voice.js),
@@ -17,7 +20,59 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (msg.target !== 'offscreen') return
     if (msg.type === 'offscreen_dictate_start') startDictation()
     else if (msg.type === 'offscreen_dictate_stop') stopDictation()
+    else if (msg.type === 'offscreen_speak') speak(msg.text)
+    else if (msg.type === 'offscreen_speak_stop') stopSpeaking()
 })
+
+// --- narration playback ----------------------------------------------------
+// One utterance at a time: a new speak (or a stop) supersedes whatever is
+// fetching or playing, so the voice never lags behind the page. The
+// generation counter makes a superseded fetch's late arrival a no-op.
+
+let speakGen = 0        // bumped by every speak/stop; stale work checks it
+let speakAudio = null   // the <audio> currently playing
+let speakAbort = null   // aborts the in-flight /tts fetch
+
+function stopSpeaking() {
+    speakGen++
+    if (speakAbort) { speakAbort.abort(); speakAbort = null }
+    if (speakAudio) {
+        try { speakAudio.pause() } catch {}
+        speakAudio = null
+    }
+}
+
+async function speak(text) {
+    if (!text) return
+    stopSpeaking()
+    const gen = speakGen
+    const ctrl = new AbortController()
+    speakAbort = ctrl
+    try {
+        const resp = await fetch('http://localhost:8000/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+            signal: ctrl.signal,
+        })
+        if (!resp.ok) throw new Error(`tts http ${resp.status}`)
+        const buf = await resp.arrayBuffer()
+        if (gen !== speakGen) return  // superseded while fetching
+        const url = URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' }))
+        const audio = new Audio(url)
+        speakAudio = audio
+        audio.onended = audio.onerror = () => {
+            URL.revokeObjectURL(url)
+            if (speakAudio === audio) speakAudio = null
+        }
+        await audio.play()
+    } catch {
+        if (gen !== speakGen) return  // deliberately interrupted — not a failure
+        // backend/Inworld unavailable: hand the text back so the background
+        // can speak it with chrome.tts instead of dropping it silently
+        send('tts_fallback', { text })
+    }
+}
 
 async function startDictation() {
     if (dictation) return
