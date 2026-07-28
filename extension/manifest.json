@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Browser Buddy - Automate Web Navigation Using Voice Command",
+  "name": "Web Buddy - Automate Web Navigation Using Voice Command",
   "version": "0.1.1",
   "description": "Voice-driven web navigation agent for non-technical users",
   "icons": {
