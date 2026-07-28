@@ -6,8 +6,8 @@
 // The one-time mic grant button also lives here: if permission is missing,
 // the hub shows it inline instead of popping up setup tabs.
 
-const WAKE_RE = /\bhey,?\s*helper\b/i
-const STOP_RE = /\b(?:thank\s*you|thanks),?\s*helper\b/i
+const WAKE_RE = /\bhey,?\s*buddy\b/i
+const STOP_RE = /\b(?:thank\s*you|thanks),?\s*buddy\b/i
 
 let wanted = false          // background's last listen/pause command
 let blocked = false         // mic permission missing — grant button shown
@@ -27,8 +27,8 @@ function setUI(state) {
     dot.classList.toggle('live', state === 'listening')
     enableBtn.style.display = state === 'needs-grant' ? 'inline-block' : 'none'
     if (state === 'listening') {
-        stateText.textContent = 'Listening for "Hey Helper"'
-        detail.textContent = 'Say "Hey Helper", then tell your helper what you need. Say "Thank you, Helper" to stop it.'
+        stateText.textContent = 'Listening for "Hey Buddy"'
+        detail.textContent = 'Say "Hey Buddy", then tell your buddy what you need. Say "Thanks, Buddy" to stop it.'
     } else if (state === 'paused') {
         stateText.textContent = 'Paused'
         detail.textContent = 'Listening resumes when you come back to Chrome.'
@@ -37,7 +37,7 @@ function setUI(state) {
         detail.textContent = 'Click the button, then choose Allow. You only do this once — it works on every website after.'
     } else {
         stateText.textContent = 'Voice is off'
-        detail.textContent = 'Turn on "Hey Helper" from the 🤖 helper on any page.'
+        detail.textContent = 'Turn on "Hey Buddy" from the 🤖 buddy on any page.'
     }
 }
 

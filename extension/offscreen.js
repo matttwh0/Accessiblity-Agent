@@ -143,7 +143,7 @@ async function startDictation() {
     // no feedback — the exact "it isn't listening to me" dead end. If the
     // service produces no transcript at all in 12s, say so and reset.
     const noSpeechTimer = setTimeout(() => {
-        send('dictation_error', { error: 'I didn\'t catch anything — say "Hey Helper" and then your request' })
+        send('dictation_error', { error: 'I didn\'t catch anything — say "Hey Buddy" and then your request' })
         stopDictation()
     }, 12000)
 

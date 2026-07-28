@@ -12,7 +12,7 @@ bubble.innerHTML = `
       <button id="a11y-agent-mic" title="Speak your request">🎤</button>
     </div>
     <button id="a11y-agent-stop" style="display:none">⏹ Stop helping</button>
-    <button id="a11y-agent-wake">👂 Say "Hey Helper": Off</button>
+    <button id="a11y-agent-wake">👂 Say "Hey Buddy": Off</button>
     <button id="a11y-agent-speech">🔊 Speak to me: On</button>
     <button id="a11y-agent-myinfo">⚙ My info</button>
     <div id="a11y-agent-checklist" style="display:none"></div>
@@ -301,7 +301,7 @@ mic.addEventListener('click', () => {
 let wakeOn = false
 
 function renderWakeBtn() {
-    wakeBtn.textContent = wakeOn ? '\u{1F442} Say "Hey Helper": On' : '\u{1F442} Say "Hey Helper": Off'
+    wakeBtn.textContent = wakeOn ? '\u{1F442} Say "Hey Buddy": On' : '\u{1F442} Say "Hey Buddy": Off'
     wakeBtn.classList.toggle('on', wakeOn)
 }
 

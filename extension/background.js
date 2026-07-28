@@ -208,7 +208,7 @@ async function startDictationForTab(tabId) {
         const hub = await findVoiceHub()
         if (hub != null) chrome.tabs.sendMessage(hub, {
             target: 'voice-hub', type: 'hub_notice',
-            text: "I can't help on this page — switch to a normal website tab and say \"Hey Helper\" again.",
+            text: "I can't help on this page — switch to a normal website tab and say \"Hey Buddy\" again.",
         }).catch(() => {})
         dictationTabId = null
         updateVoiceHub()  // resume wake listening instead of hanging
@@ -251,7 +251,7 @@ async function onExtensionPageMessage(msg, sender) {
         // speak() already checked the 🔊 toggle before sending the text over.
         try { chrome.tts.speak(msg.text, { rate: 0.9, enqueue: false }) } catch {}
     } else if (msg.type === 'stop_phrase_heard') {
-        // "thanks helper": first, quiet whatever is being read out — this also
+        // "thanks buddy": first, quiet whatever is being read out — this also
         // works after a task ended, while its final summary is still playing
         stopSpeech()
         // then stop the active tab's task (or any running task)
@@ -282,7 +282,7 @@ async function onExtensionPageMessage(msg, sender) {
                 try { hub = (await editTab(() => chrome.tabs.create({ url: VOICE_HUB_URL, pinned: true }))).id } catch {}
             }
             if (hub != null) editTab(() => chrome.tabs.update(hub, { active: true })).catch(() => {})
-            if (t != null) notify(t, { type: 'voice_error', error: 'Voice needs a one-time setup — see the Helper voice tab' })
+            if (t != null) notify(t, { type: 'voice_error', error: 'Voice needs a one-time setup — see the Buddy voice tab' })
         }
         dictationTabId = null
         try { chrome.storage.session.remove('dictationTabId') } catch {}
@@ -319,7 +319,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     else if (msg.type === 'content_ready') onContentReady(tabId, msg)
 })
 
-// User asked the agent to stand down (Stop button or "thank you helper").
+// User asked the agent to stand down (Stop button or "thanks buddy").
 // Closing the session's WebSocket makes the backend's task loop exit on its
 // next send/receive — at most one in-flight LLM call completes, nothing new starts.
 function stopTask(tabId) {
